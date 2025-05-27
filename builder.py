@@ -624,7 +624,7 @@ class Events(PandasMixin):
         self._timeseries = timeseries
         return self._timeseries
 
-    @staticmethod
+    @staticmethod 
     def to_binned_timeseries(
         timeseries: pd.DataFrame,
         stats_csv: Path | str,
@@ -635,13 +635,24 @@ class Events(PandasMixin):
         they choose n_timesteps=32 in the paper
         we might increase this as well since we're passing only 1/3 of features
         and DP noise + small transformer might challenge results"""
-
+        if timeseries.empty:
+            logger.warning("Timeseries DataFrame is empty, returning empty DataFrame for patient.")
+            return pd.DataFrame()
         if task == "mortality":
-            timeseries = timeseries[timeseries["HOURS"] <= 48]
+            timeseries = timeseries[timeseries["HOURS"] <= 48] 
+        
+        
+        # TODO: 
 
         feature_stats = pd.read_csv(stats_csv, index_col=0)
         means = feature_stats["mean"].to_dict()
         stds = feature_stats["std"].to_dict()
+        expected_cols = list(means.keys()) # when we discard hours > 48, we also lose some lab events cols we need to add them back
+
+        for col in expected_cols:
+            if col not in timeseries.columns:
+                logger.warning(f"Column {col} is missing in timeseries, filling with NaN.")
+                timeseries[col] = np.nan
 
         timeseries["BIN"] = np.where(
             np.isclose(timeseries["HOURS"], max(timeseries["HOURS"])),
@@ -655,10 +666,11 @@ class Events(PandasMixin):
             & (timeseries["BIN"] < n_timesteps)
             & (~timeseries["HOURS"].isna())
         ]
-
+        
         normalize_cols = [
-            col for col in timeseries.columns if col in means and col in stds
+            col for col in expected_cols if col in timeseries.columns
         ]
+
         for col in normalize_cols:
             mean = means.get(col, 0)
             std = stds.get(col, 1e-7)
@@ -671,7 +683,7 @@ class Events(PandasMixin):
         bin_ends = pd.Series(
             bin_edges, name="BIN_END_HOURS", index=np.arange(n_timesteps)
         )
-        norm_cols = [col for col in timeseries.columns if col.endswith("_NORM")]
+        norm_cols = [f"{col}_NORM" for col in expected_cols] # keep the same cols order
         binned_timeseries = timeseries[["BIN"] + norm_cols].copy()
         binned_timeseries.columns = ["BIN"] + [
             col.replace("_NORM", "") for col in norm_cols
@@ -1134,8 +1146,6 @@ class MIMIC3Dataset(Dataset):
 # csv dump data after processing
 # might turn it into typer cli app where they can engage with the dataset, adding more functionalities, sqlalchemy, duckdb if time allows
 # multiprocess get_cleaned_events
-# drop weight and height since we have no info about them in mimic iii, it's weird that they are still there
-# check fraction inspired oxygen values
 
 # class Hospital(Dataset):
 # def get_split_ratio
@@ -1179,6 +1189,9 @@ if __name__ == "__main__":
     binned_timeseries = []
     # quick fix for now to add missing variables to timeseries if the patient has them missing
     columns_of_interest = [
+        "Capillary refill rate",
+        "Diastolic blood pressure",
+        "Fraction inspired oxygen",
         "Glascow coma scale eye opening",
         "Glascow coma scale motor response",
         "Glascow coma scale total",
@@ -1204,21 +1217,22 @@ if __name__ == "__main__":
         )
         patient.add_events(events)
         timeseries = patient.events.timeseries
-        # if idx == 2:
-        #     binned_timeseries_df = Events.to_binned_timeseries(
-        #         timeseries,
-        #         stats_csv=DATASET_PATH / "features_stats.csv",
-        #         n_timesteps=24,
-        #         task="mortality",
-        #     )
-        #     binned_timeseries.append(binned_timeseries_df)
-    #     for col in columns_of_interest:
-    #         if col not in timeseries.columns:
-    #             timeseries[col] = np.nan
-
-    #     if not timeseries.empty:
-    #          all_timeseries.append(timeseries)
+        
+        
+        binned_timeseries_df = Events.to_binned_timeseries(
+            timeseries,
+            stats_csv=DATASET_PATH / "features_stats_3.csv",
+            n_timesteps=24,
+            task="mortality",
+        )
+        binned_timeseries.append(binned_timeseries_df)
+    breakpoint()    
+        # for col in columns_of_interest:
+        #     if col not in timeseries.columns:
+        #         timeseries[col] = np.nan
+        
+        # if not timeseries.empty:
+        #      all_timeseries.append(timeseries)
 
     # stats_df = Patient.get_stats(all_timeseries, columns_of_interest=columns_of_interest)
-    # stats_df.to_csv(DATASET_PATH / "features_stats.csv", index=False)
-    breakpoint()
+    # stats_df.to_csv(DATASET_PATH / "features_stats_3.csv", index=False)
