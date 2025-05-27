@@ -1151,7 +1151,6 @@ class MIMIC3Dataset(Dataset):
 # TODO:
 # csv dump data after processing
 # might turn it into typer cli app where they can engage with the dataset, adding more functionalities, sqlalchemy, duckdb if time allows
-# multiprocess get_cleaned_events
 
 # class Hospital(Dataset):
 # def get_split_ratio
@@ -1236,6 +1235,14 @@ if __name__ == "__main__":
             n_timesteps=24,
             task="mortality",
         )
+        input_cols = [col for col in binned_timeseries_df.columns]
+        mask = ~binned_timeseries_df[input_cols].isna()
+        mask_tensor = torch.tensor(mask.values, dtype=torch.bool) 
+        #mask_impute = 
+        input_tensor = torch.tensor(binned_timeseries_df[input_cols].fillna(0).values, dtype=torch.float32)
+
+        breakpoint()
+
         binned_timeseries.append(binned_timeseries_df)
     breakpoint()    
         # for col in columns_of_interest:
