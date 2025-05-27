@@ -454,28 +454,38 @@ class Events(PandasMixin):
         self._timeseries = timeseries
         return self._timeseries
 
-    # def to_binned_timeseries(self, timeseries: pd.DataFrame, n_timesteps=24) -> pd.DataFrame:
-    #     """ adapted from https://github.com/layer6ai-labs/DuETT/blob/master/physionet.py#L83
-    #     they choose n_timesteps=32 in the paper
-    #     we might increase this as well since we're passing only 1/3 of features 
-    #     and DP noise + small transformer might challenge results """
-    #     timeseries['BIN']  = np.where(
-    #         np.isclose(timeseries['HOURS'], max(timeseries['HOURS'])),
-    #         n_timesteps - 1,
-    #        (timeseries['HOURS'] / timeseries['HOURS'].max() * n_timesteps).astype(int)
-    #     )
-    #     timeseries = timeseries[
-    #         (timeseries['BIN'] >= 0) and
-    #         (timeseries['BIN'] < n_timesteps) and
-    #         (~timeseries['HOURS'].isna()) # mask and drop
-    #     ]
-    #     feature_stats = (
-    #         timeseries.dropna(subset=['VALUE'])
-    #         .groupby('VARIABLE')['VALUE']
-    #         .agg(['mean', 'std', 'max', 'min'])
-    #     )
-    #     means = feature_stats['mean'].to_dict()
-    #     stds = feature_stats['std'].to_dict()
+    @staticmethod
+    def to_binned_timeseries(timeseries: pd.DataFrame, stats_csv: Path | str, n_timesteps=24) -> pd.DataFrame:
+        """ adapted from https://github.com/layer6ai-labs/DuETT/blob/master/physionet.py#L83
+        they choose n_timesteps=32 in the paper
+        we might increase this as well since we're passing only 1/3 of features 
+        and DP noise + small transformer might challenge results """
+        """ for mortality prediction add conditional to check task and if that's the case only select 24 or 48 hrs timewindow"""
+        features_stats = pd.read_csv(stats_csv, index_col=0)
+        
+        timeseries['BIN']  = np.where(
+            np.isclose(timeseries['HOURS'], max(timeseries['HOURS'])),
+            n_timesteps - 1,
+           (timeseries['HOURS'] / timeseries['HOURS'].max() * n_timesteps).astype(int)
+        )
+    
+
+        timeseries = timeseries[
+            (timeseries['BIN'] >= 0) &
+            (timeseries['BIN'] < n_timesteps) &
+            (~timeseries['HOURS'].isna()) # mask and drop also fillna(0)
+        ]
+        breakpoint()
+
+
+        feature_stats = (
+            timeseries.dropna(subset=['VALUE'])
+            .groupby('VARIABLE')['VALUE']
+            .agg(['mean', 'std', 'max', 'min'])
+        )
+        
+        means = feature_stats['mean'].to_dict()
+        stds = feature_stats['std'].to_dict()
 
     #     def normalize(row):
     #         mean = means.get(row['VARIABLE'], 0)
@@ -883,7 +893,7 @@ if __name__ == "__main__":
     logger.info(f"Total patients: {len(full_db)}")
     logger.info(f"Filtered patients (single stay, no transfers): {len(filtered_db)}")
     all_timeseries = []
-    
+    binned_timeseries = []
     # quick fix for now to add missing variables to timeseries if the patient has them missing
     columns_of_interest = [
         'Glascow coma scale eye opening', 'Glascow coma scale motor response',
@@ -900,15 +910,16 @@ if __name__ == "__main__":
         )
         patient.add_events(events)
         timeseries = patient.events.timeseries
-        for col in columns_of_interest:
-            if col not in timeseries.columns:
-                timeseries[col] = np.nan
+        if idx == 2:
+            binned_timeseries_df = Events.to_binned_timeseries(timeseries, stats_csv=DATASET_PATH / "features_stats.csv", n_timesteps=24)
+            binned_timeseries.append(binned_timeseries_df)
+    #     for col in columns_of_interest:
+    #         if col not in timeseries.columns:
+    #             timeseries[col] = np.nan
         
-        if not timeseries.empty:
-             all_timeseries.append(timeseries)
+    #     if not timeseries.empty:
+    #          all_timeseries.append(timeseries)
     
-    stats_df = Patient.get_stats(all_timeseries, columns_of_interest=columns_of_interest)
-    breakpoint()
-    stats_df.to_csv(DATASET_PATH / "features_stats.csv", index=False)
-
+    # stats_df = Patient.get_stats(all_timeseries, columns_of_interest=columns_of_interest)
+    # stats_df.to_csv(DATASET_PATH / "features_stats.csv", index=False)
     breakpoint()
