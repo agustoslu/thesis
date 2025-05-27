@@ -475,24 +475,24 @@ class Events(PandasMixin):
             (timeseries['BIN'] < n_timesteps) &
             (~timeseries['HOURS'].isna()) # mask and drop also fillna(0)
         ]
+        long_ts = PandasMixin.to_long(timeseries, index_name="BIN")
         breakpoint()
-
-
         feature_stats = (
-            timeseries.dropna(subset=['VALUE'])
+            timeseries.dropna(subset=['VALUE']) # we got them in wide format so it won't work
             .groupby('VARIABLE')['VALUE']
             .agg(['mean', 'std', 'max', 'min'])
         )
-        
+        breakpoint()
         means = feature_stats['mean'].to_dict()
         stds = feature_stats['std'].to_dict()
 
-    #     def normalize(row):
-    #         mean = means.get(row['VARIABLE'], 0)
-    #         std = stds.get(row['VARIABLE'], 1e-7)
-    #         return (row['VALUE'] - mean) / std
+        def normalize(row):
+            mean = means.get(row['VARIABLE'], 0)
+            std = stds.get(row['VARIABLE'], 1e-7)
+            return (row['VALUE'] - mean) / std
 
-    #     timeseries['NORM_VALUE'] = timeseries.apply(normalize, axis=1)
+        timeseries['NORM_VALUE'] = timeseries.apply(normalize, axis=1)
+        breakpoint()
         
     #     binned = timeseries.pivot_table(
     #         index='BIN',
@@ -859,6 +859,7 @@ class MIMIC3Dataset(Dataset):
 # get_stats for events vars and static vars and pass them to to_binned_timeseries for normalization
 # csv dump data after processing
 # might turn it into typer cli app where they can engage with the dataset, adding more functionalities, sqlalchemy, duckdb if time allows
+# multiprocess get_cleaned_events
 
 # class Hospital(Dataset):
 # def get_split_ratio
