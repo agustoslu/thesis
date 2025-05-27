@@ -651,7 +651,6 @@ class Patient(PandasMixin):
     def add_table(self, table_name: str, df: pd.DataFrame):
         self.data[table_name] = df.reset_index(drop=True)
     
-    @staticmethod
     def get_table(self, table_name: str) -> pd.DataFrame:
         return self.data.get(table_name, pd.DataFrame())
     
@@ -826,10 +825,10 @@ if __name__ == "__main__":
         data_path=DATASET_PATH / "mimic-iii-clinical-database-demo-1.4",
         diagnoses_map_path=DATASET_PATH / "mimic-iii-clinical-database-demo-1.4/D_ICD_DIAGNOSES.csv",
         diagnoses_path=DATASET_PATH / "mimic-iii-clinical-database-demo-1.4/DIAGNOSES_ICD.csv",
-        phenotype_definitions_path=home_dir "/mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
-        hcup_ccs_2015_path=home_dir "/mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
-        var_map_path=home_dir "/mimic3benchmark/resources/itemid_to_variable_map.csv",
-        var_ranges_path=home_dir "/mimic3benchmark/resources/variable_ranges.csv",
+        phenotype_definitions_path=home_dir / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
+        hcup_ccs_2015_path=home_dir / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
+        var_map_path=home_dir / "mimic3benchmark/resources/itemid_to_variable_map.csv",
+        var_ranges_path=home_dir / "mimic3benchmark/resources/variable_ranges.csv",
         variable_column="LEVEL2"
     )
     
