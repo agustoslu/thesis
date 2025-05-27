@@ -209,6 +209,7 @@ class ICUStay:
     AGE: Optional[int] = None
     MORTALITY_INUNIT: Optional[int] = None
     MORTALITY_INHOSPITAL: Optional[int] = None
+    ICU_TYPE: Optional[int] = None
 
 
     def is_transfer_free(self) -> bool:
@@ -264,6 +265,19 @@ class ICUStay:
         mortality = pd.notnull(self.DOD) and ((self.ADMITTIME <= self.DOD) and (self.DISCHTIME >= self.DOD))
         mortality = mortality or (pd.notnull(self.DEATHTIME) and ((self.ADMITTIME <= self.DEATHTIME) and (self.DISCHTIME >= self.DEATHTIME)))
         return int(mortality)
+    
+    def encode_icutype(self) -> int:
+        icu_type_map = {
+            'MICU': 1,
+            'SICU': 2,
+            'CSRU': 3,
+            'TSICU': 4,
+            'CCU': 5,
+            'NICU': 6,
+            'PICU': 7,
+            'OTHER': 8
+        }
+        return icu_type_map.get(self.FIRST_CAREUNIT.strip().upper(), icu_type_map['OTHER'])
     
     @classmethod
     def filter_admissions_on_nb_icustays(cls, icustays_df: pd.DataFrame, min_nb_stays=1, max_nb_stays=1) -> List["ICUStay"]:
@@ -398,7 +412,7 @@ class Events(PandasMixin):
             return events
         impute_value = self.data_manager.variable_ranges.at[variable, "IMPUTE"]
         idx = (events["VARIABLE"] == variable)
-        events.loc[idx, "VALUE"] = events.loc[idx, "VALUE"].fillna(impute_value)
+        events.loc[idx, "VALUE"] = events.loc[idx, "VALUE"].fillna(impute_value).infer_objects(copy=False)
         self.events = events
         return events
     
@@ -428,9 +442,8 @@ class Events(PandasMixin):
             if variable not in timeseries:
                 timeseries[variable] = np.nan
 
-        static_cols = ["ICUSTAY_ID", "HADM_ID", "SUBJECT_ID", "AGE", "GENDER", "ETHNICITY", "FIRST_CAREUNIT"]
+        static_cols = ["ICUSTAY_ID", "HADM_ID", "SUBJECT_ID", "AGE", "GENDER", "ETHNICITY", "ICU_TYPE"]
         static_wide = self.patient.icustays_df[static_cols].copy()
-        static_wide = static_wide.rename(columns={"FIRST_CAREUNIT": "ICU_TYPE"})
         if "ICUSTAY_ID" in static_wide.columns:
             static_wide = static_wide.set_index("ICUSTAY_ID")
         static_wide.index = static_wide.index.astype(int)
@@ -689,6 +702,7 @@ class Patient(PandasMixin):
             stay.AGE=stay.age_at_admission()
             stay.MORTALITY_INUNIT=stay.encode_inunit_mortality() 
             stay.MORTALITY_INHOSPITAL=stay.encode_inhospital_mortality()
+            stay.ICU_TYPE = stay.encode_icutype()
             self.icu_stays.append(stay)
             
         except Exception as e:
@@ -780,7 +794,38 @@ class Patient(PandasMixin):
         logger.info(f"Total patients after filtering: {len(filtered_patients)}")
 
         return dict(patients), filtered_patients
-   
+    
+
+    # TODO: followed the same logic as in their code but not quite sure if I need to separete static vars since a patient with more timesteps will
+    # also have more influence on the final stats.
+
+    @staticmethod
+    def get_stats(all_timeseries: list, columns_of_interest: list) -> pd.DataFrame:
+        
+        if not all_timeseries:
+            return pd.DataFrame()
+
+        df = pd.concat(all_timeseries, ignore_index=True)
+        df = df[columns_of_interest].apply(pd.to_numeric, errors='coerce')
+
+        stats = []
+        for col in columns_of_interest:
+            vals = df[col].values.flatten()
+            vals = vals[~np.isnan(vals)]
+            if len(vals) == 0:
+                stats.append({'VARIABLE': col, 'mean': np.nan, 'std': np.nan, 'min': np.nan, 'max': np.nan, 'count': 0})
+            else:
+                stats.append({
+                    'VARIABLE': col,
+                    'mean': np.round(np.mean(vals), 3),
+                    'std': np.round(np.std(vals), 3),
+                    'min': np.round(np.min(vals), 3),
+                    'max': np.round(np.max(vals), 3),
+                    'count': len(vals)
+                })
+        stats_df = pd.DataFrame(stats)
+        return stats_df
+
     def __repr__(self):
         careunits = list(self.icustays_df["FIRST_CAREUNIT"].unique()) if not self.icustays_df.empty else []
         return f"<Patient {self.subject_id}, {len(self.data)} tables, {len(self.icu_stays)} ICU stays, Careunits: {careunits}>"
@@ -837,7 +882,16 @@ if __name__ == "__main__":
     full_db, filtered_db = Patient.build_patient_database(tables, filter_single_stay=True)
     logger.info(f"Total patients: {len(full_db)}")
     logger.info(f"Filtered patients (single stay, no transfers): {len(filtered_db)}")
-
+    all_timeseries = []
+    
+    # quick fix for now to add missing variables to timeseries if the patient has them missing
+    columns_of_interest = [
+        'Glascow coma scale eye opening', 'Glascow coma scale motor response',
+        'Glascow coma scale total', 'Glascow coma scale verbal response',
+        'Glucose', 'Heart Rate', 'Mean blood pressure', 'Oxygen saturation',
+        'Respiratory rate', 'Systolic blood pressure', 'Temperature', 'pH',
+        'AGE', 'GENDER', 'ETHNICITY', 'ICU_TYPE'
+        ]
     for idx, (pid, patient) in enumerate(filtered_db.items(), 1):
         logger.info(f"Loading events for {pid} ({idx}/{len(filtered_db)})...")
         events = Events(
@@ -846,7 +900,15 @@ if __name__ == "__main__":
         )
         patient.add_events(events)
         timeseries = patient.events.timeseries
-        all_timeseries = []
+        for col in columns_of_interest:
+            if col not in timeseries.columns:
+                timeseries[col] = np.nan
+        
         if not timeseries.empty:
              all_timeseries.append(timeseries)
+    
+    stats_df = Patient.get_stats(all_timeseries, columns_of_interest=columns_of_interest)
+    breakpoint()
+    stats_df.to_csv(DATASET_PATH / "features_stats.csv", index=False)
+
     breakpoint()
