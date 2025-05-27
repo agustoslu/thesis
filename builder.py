@@ -100,8 +100,6 @@ class PandasMixin:
         df = pd.read_csv(path, header=header, index_col=index_col)
         return self.standardize_columns(df, case=case)
 
-    # def from_df_to_tensor()
-
 
 @dataclass
 class DataManager(PandasMixin):
@@ -1238,7 +1236,7 @@ if __name__ == "__main__":
         input_cols = [col for col in binned_timeseries_df.columns]
         mask = ~binned_timeseries_df[input_cols].isna()
         mask_tensor = torch.tensor(mask.values, dtype=torch.bool) 
-        #mask_impute = 
+        mask_impute = (binned_timeseries_df[input_cols] == 0.0)
         input_tensor = torch.tensor(binned_timeseries_df[input_cols].fillna(0).values, dtype=torch.float32)
 
         breakpoint()
