@@ -640,9 +640,8 @@ class Events(PandasMixin):
             return pd.DataFrame()
         if task == "mortality":
             timeseries = timeseries[timeseries["HOURS"] <= 48] 
-        
-        
-        # TODO: 
+        elif task == "phenotypes":
+            pass
 
         feature_stats = pd.read_csv(stats_csv, index_col=0)
         means = feature_stats["mean"].to_dict()
@@ -810,16 +809,22 @@ class Events(PandasMixin):
             self._timeseries = timeseries
 
         return self._cleaned_events, self._timeseries
+    
+    @staticmethod
+    def get_cleaned_events_static(events_obj):
+        return events_obj.get_cleaned_events()
 
-    @property
+    @property # since they are cached they will not call get_cleaned_events again
     def cleaned_events(self) -> pd.DataFrame:
-        cleaned_events, _ = self.get_cleaned_events()
-        return cleaned_events
+        if self._cleaned_events is None:
+            self.get_cleaned_events()
+        return self._cleaned_events
 
     @property
     def timeseries(self) -> pd.DataFrame:
-        _, timeseries = self.get_cleaned_events()
-        return timeseries
+        if self._timeseries is None:
+            self.get_cleaned_events()
+        return self._timeseries
 
     #####################################
     # Time-series cleaning functions
@@ -965,6 +970,7 @@ class Patient(PandasMixin):
             )
 
     def add_events(self, events: Events):
+        #logger.info(f"Adding events for patient {self.subject_id}")
         self.events = events
 
     def filter_diagnoses_on_stays(diagnoses, icustays_df) -> pd.DataFrame:
@@ -1209,6 +1215,7 @@ if __name__ == "__main__":
         "ETHNICITY",
         "ICU_TYPE",
     ]
+    events_objs = []
     for idx, (pid, patient) in enumerate(filtered_db.items(), 1):
         logger.info(f"Loading events for {pid} ({idx}/{len(filtered_db)})...")
         events = Events(
@@ -1216,9 +1223,13 @@ if __name__ == "__main__":
             patient=patient,
         )
         patient.add_events(events)
-        timeseries = patient.events.timeseries
-        
-        
+        events_objs.append(events)
+
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        cleaned_results = list(executor.map(Events.get_cleaned_events_static, events_objs))
+
+    for events in events_objs:
+        timeseries = events.timeseries
         binned_timeseries_df = Events.to_binned_timeseries(
             timeseries,
             stats_csv=DATASET_PATH / "features_stats_3.csv",
