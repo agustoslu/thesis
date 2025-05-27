@@ -52,6 +52,18 @@ class PandasMixin:
         df_reset = df.reset_index()
         return pd.melt(df_reset, id_vars=[index_name], var_name=variable_name, value_name=value_name)
     
+    @staticmethod
+    def to_wide(df: pd.DataFrame, index_name: str = None, variable_name: str = "VARIABLE", value_name: str = "VALUE") -> pd.DataFrame:
+        """
+        e.g. wide_phenotypes = PandasMixin.to_wide(long_phenotypes, index_name="ICUSTAY_ID")
+        """
+        if index_name is None:
+            index_name = df.index.name
+
+        wide_df = df.pivot(index=index_name, columns=variable_name, values=value_name)
+        wide_df = wide_df.reset_index()
+        return wide_df
+    
     def to_dataframe(self, records: List[object]) -> pd.DataFrame:
         df = pd.DataFrame([self._to_clean_dict(obj) for obj in records])
         return self.standardize_columns(df, case="upper")
@@ -454,63 +466,51 @@ class Events(PandasMixin):
         self._timeseries = timeseries
         return self._timeseries
 
+    
     @staticmethod
-    def to_binned_timeseries(timeseries: pd.DataFrame, stats_csv: Path | str, n_timesteps=24) -> pd.DataFrame:
+    def to_binned_timeseries(timeseries: pd.DataFrame, stats_csv: Path | str, n_timesteps=24, task="mortality") -> pd.DataFrame:
         """ adapted from https://github.com/layer6ai-labs/DuETT/blob/master/physionet.py#L83
         they choose n_timesteps=32 in the paper
         we might increase this as well since we're passing only 1/3 of features 
         and DP noise + small transformer might challenge results """
-        """ for mortality prediction add conditional to check task and if that's the case only select 24 or 48 hrs timewindow"""
-        features_stats = pd.read_csv(stats_csv, index_col=0)
+        
+        if task == "mortality": 
+            timeseries = timeseries[timeseries['HOURS'] <= 48]
+        
+        feature_stats = pd.read_csv(stats_csv, index_col=0)
+        means = feature_stats['mean'].to_dict()
+        stds = feature_stats['std'].to_dict()
         
         timeseries['BIN']  = np.where(
             np.isclose(timeseries['HOURS'], max(timeseries['HOURS'])),
             n_timesteps - 1,
            (timeseries['HOURS'] / timeseries['HOURS'].max() * n_timesteps).astype(int)
         )
-    
+        timeseries.drop(columns=["CHARTTIME"], inplace=True, errors='ignore')
 
         timeseries = timeseries[
             (timeseries['BIN'] >= 0) &
             (timeseries['BIN'] < n_timesteps) &
-            (~timeseries['HOURS'].isna()) # mask and drop also fillna(0)
+            (~timeseries['HOURS'].isna())
         ]
-        long_ts = PandasMixin.to_long(timeseries, index_name="BIN")
-        breakpoint()
-        feature_stats = (
-            timeseries.dropna(subset=['VALUE']) # we got them in wide format so it won't work
-            .groupby('VARIABLE')['VALUE']
-            .agg(['mean', 'std', 'max', 'min'])
-        )
-        breakpoint()
-        means = feature_stats['mean'].to_dict()
-        stds = feature_stats['std'].to_dict()
-
-        def normalize(row):
-            mean = means.get(row['VARIABLE'], 0)
-            std = stds.get(row['VARIABLE'], 1e-7)
-            return (row['VALUE'] - mean) / std
-
-        timeseries['NORM_VALUE'] = timeseries.apply(normalize, axis=1)
-        breakpoint()
         
-    #     binned = timeseries.pivot_table(
-    #         index='BIN',
-    #         columns='VARIABLE',
-    #         values='VALUE',
-    #         aggfunc='mean'
-    #     )
+        normalize_cols = [col for col in timeseries.columns if col in means and col in stds]    
+        for col in normalize_cols:
+            mean = means.get(col, 0)
+            std = stds.get(col, 1e-7)
+            timeseries[col] = pd.to_numeric(timeseries[col], errors='coerce')
+            timeseries[f"{col}_NORM"] = (timeseries[col] - mean) / (std + 1e-7)
 
-    #     bin_edges = (np.arange(1, n_timesteps + 1) / n_timesteps) * max(timeseries['HOURS'])
-    #     bin_ends = pd.Series(bin_edges, name='BIN_END_HOURS', index=np.arange(n_timesteps))
-
-    #     # we already added static vars
-
-    #     return binned_timeseries
+        bin_edges = (np.arange(1, n_timesteps + 1) / n_timesteps) * max(timeseries['HOURS'])
+        bin_ends = pd.Series(bin_edges, name='BIN_END_HOURS', index=np.arange(n_timesteps))
+        norm_cols = [col for col in timeseries.columns if col.endswith('_NORM')]
+        binned_timeseries = timeseries[['BIN'] + norm_cols].copy()
+        binned_timeseries.columns = ['BIN'] + [col.replace('_NORM', '') for col in norm_cols]
+        binned_timeseries['BIN_END_HOURS'] = binned_timeseries['BIN'].map(bin_ends)
+        cols = ['BIN'] + [col for col in binned_timeseries.columns if col not in ['BIN', 'BIN_END_HOURS']] + ['BIN_END_HOURS']
+        binned_timeseries = binned_timeseries[cols]
+        return binned_timeseries # BIN, lab events, demographics, BIN_END_HOURS
       
-         
-
-
     
     def validate_events(self, events_df: pd.DataFrame, icustays_df: pd.DataFrame) -> bool:
         n_events = 0                   # total number of events
@@ -811,7 +811,6 @@ class Patient(PandasMixin):
 
     @staticmethod
     def get_stats(all_timeseries: list, columns_of_interest: list) -> pd.DataFrame:
-        
         if not all_timeseries:
             return pd.DataFrame()
 
@@ -856,10 +855,11 @@ class MIMIC3Dataset(Dataset):
 
 
 # TODO:
-# get_stats for events vars and static vars and pass them to to_binned_timeseries for normalization
 # csv dump data after processing
 # might turn it into typer cli app where they can engage with the dataset, adding more functionalities, sqlalchemy, duckdb if time allows
 # multiprocess get_cleaned_events
+# drop weight and height since we have no info about them in mimic iii, it's weird that they are still there 
+
 
 # class Hospital(Dataset):
 # def get_split_ratio
@@ -912,7 +912,7 @@ if __name__ == "__main__":
         patient.add_events(events)
         timeseries = patient.events.timeseries
         if idx == 2:
-            binned_timeseries_df = Events.to_binned_timeseries(timeseries, stats_csv=DATASET_PATH / "features_stats.csv", n_timesteps=24)
+            binned_timeseries_df = Events.to_binned_timeseries(timeseries, stats_csv=DATASET_PATH / "features_stats.csv", n_timesteps=24, task="mortality")
             binned_timeseries.append(binned_timeseries_df)
     #     for col in columns_of_interest:
     #         if col not in timeseries.columns:
