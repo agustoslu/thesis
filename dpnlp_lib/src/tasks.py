@@ -22,7 +22,7 @@ class MortalityTask(BaseTask):
     def get_label(self, patient):
         assert len(patient.icustays_df) == 1
         label = patient.icustays_df["MORTALITY_INHOSPITAL"].astype(int)
-        return int(label.values[0])
+        return label
 
     def compute_metrics(self, y_true, y_pred):
         return {
@@ -76,7 +76,7 @@ class PhenotypeTask(BaseTask):
 
         phenos = phenos[self.PHENOTYPE_LIST]
         label = phenos.iloc[0].astype(int).values
-        return torch.tensor(label, dtype=torch.float32)
+        return label
 
     def compute_metrics(self, y_true, y_pred):
         return {

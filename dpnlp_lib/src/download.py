@@ -3,8 +3,8 @@ import requests
 import zipfile
 from pathlib import Path
 
-home_dir = Path("/home/tanalp/thesis/dpnlp")
-DATASET_PATH = home_dir / "dataset / dummy_mimic_iii"
+home_dir = Path(__file__).parent
+DATASET_PATH = home_dir / "dataset"
 dataset_url = "https://physionet.org/static/published-projects/mimiciii-demo/mimic-iii-clinical-database-demo-1.4.zip"  # use demo dataset for now, only includes 100 patients and clinical notes removed, 26 tables
 
 
