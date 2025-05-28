@@ -8,13 +8,17 @@ authors = [
     { name = "Tanalp Agustoslu", email = "t.agustoslu@campus.lmu.de" }
 ]
 dependencies = [
+    "antlr4-python3-runtime==4.9.3",
     "certifi==2025.4.26",
     "charset-normalizer==3.4.2",
+    "cloudpickle==3.1.1",
     "contourpy==1.3.2",
     "cycler==0.12.1",
     "filelock==3.18.0",
     "fonttools==4.58.0",
     "fsspec==2025.5.1",
+    "hydra-core==1.3.2",
+    "hydra-submitit-launcher==1.2.0",
     "idna==3.10",
     "jinja2==3.1.6",
     "joblib==1.5.1",
@@ -38,6 +42,7 @@ dependencies = [
     "nvidia-nccl-cu12==2.26.2",
     "nvidia-nvjitlink-cu12==12.6.85",
     "nvidia-nvtx-cu12==12.6.77",
+    "omegaconf==2.3.0",
     "packaging==25.0",
     "pandas==2.2.3",
     "pillow==11.2.1",
@@ -51,6 +56,7 @@ dependencies = [
     "seaborn==0.13.2",
     "setuptools==80.9.0",
     "six==1.17.0",
+    "submitit==1.5.3",
     "sympy==1.14.0",
     "threadpoolctl==3.6.0",
     "torch==2.7.0",
