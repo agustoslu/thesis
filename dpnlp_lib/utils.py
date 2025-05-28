@@ -215,8 +215,10 @@ def partition_data(dataset, iid, is_shuffle = True):
 
 # TODO:
 # incremental checkpointing?
-# metrics
-# plotting functionss
+# metrics 
+# plotting functions
+# dp-fl specific communication runs
+# hardware monitoring? 
 
 # def save_to_results_files(df: pd.DataFrame) -> None:
 #     df.to_json(results_file(), orient="records", lines=True, mode="a")

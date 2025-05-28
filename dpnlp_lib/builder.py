@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 from collections import defaultdict
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, random_split
 from pathlib import Path
 import logging
 from argparse import ArgumentParser
@@ -1169,12 +1169,14 @@ class HospitalUnit:
         labels = self.get_labels(task)
         return MIMIC3Dataset(features, labels)
 
-    def split_dataset(self, dataset, split_ratio=0.8):
+    def split_dataset(self, dataset, split_ratio=0.8, seed=42):
         total_len = len(dataset)
         train_len = int(total_len * split_ratio)
         dev_len = int((total_len - train_len) / 2)
         test_len = total_len - train_len - dev_len
-        return train_len, dev_len, test_len
+        lengths = [train_len, dev_len, test_len]
+        generator = torch.Generator().manual_seed(seed)
+        return random_split(dataset, lengths, generator=generator)
 
     def partition_dataset(
         self, dataset, split_method="iid", num_clients=2, alpha=0.5, is_shuffle=True
