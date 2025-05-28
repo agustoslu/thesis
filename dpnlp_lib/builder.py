@@ -1130,10 +1130,6 @@ class Patient(PandasMixin):
 
 class MIMIC3Dataset(Dataset):
     def __init__(self, features, labels):
-        """
-        features: list or array of feature arrays/tensors (one per patient)
-        labels: list or array of labels (int, float, or np.array for multi-label e.g. phenotypes)
-        """
         self.features = [
             torch.tensor(f, dtype=torch.float32) if not torch.is_tensor(f) else f
             for f in features
@@ -1219,6 +1215,10 @@ if __name__ == "__main__":
         variable_column="LEVEL2",
     )
 
+    ################################################
+    # Build Patient Database
+    ################################################
+
     tables = data_manager.load_all_tables(data_manager.data_path)
     logger.info("Building patient database...")
     full_db, filtered_db = Patient.build_patient_database(
@@ -1226,6 +1226,11 @@ if __name__ == "__main__":
     )
     logger.info(f"Total patients: {len(full_db)}")
     logger.info(f"Filtered patients (single stay, no transfers): {len(filtered_db)}")
+
+    ################################################
+    # Timeseries Data
+    ################################################
+
     all_timeseries = []
     binned_timeseries = []
     binned_tensors = []
@@ -1266,7 +1271,6 @@ if __name__ == "__main__":
             executor.map(Events.get_cleaned_events_static, events_objs)
         )
 
-    breakpoint()
     for events in events_objs:
         timeseries = events.timeseries
         binned_timeseries_df = Events.to_binned_timeseries(
@@ -1283,8 +1287,6 @@ if __name__ == "__main__":
             binned_timeseries_df[input_cols].fillna(0).values, dtype=torch.float32
         )
 
-        breakpoint()
-
         binned_timeseries.append(binned_timeseries_df)
         binned_tensors.append(
             {
@@ -1293,6 +1295,37 @@ if __name__ == "__main__":
                 "mask_impute": mask_impute,
             }
         )
+
+    ################################################
+    # Test cases
+    ################################################
+
+    patients = list(filtered_db.values())
+    num_patients = len(patients)
+    num_icustays = sum(len(p.icu_stays) for p in patients)
+    num_events = sum(
+        len(p.events.events) for p in patients if hasattr(p.events, "events")
+    )
+
+    expected_count_patient = 33798
+    expected_count_icustay = 42276
+    expected_count_events = 250_000_000
+
+    assert num_patients == expected_count_patient, (
+        f"Expected {expected_count_patient} patients, found {num_patients}"
+    )
+    assert num_icustays == expected_count_icustay, (
+        f"Expected {expected_count_icustay} ICU stays, found {num_icustays}"
+    )
+    assert num_events > expected_count_events, (
+        f"Expected more than {expected_count_events} events, found {num_events}"
+    )
+
+    logger.info(f"Number of patients: {num_patients}")
+    logger.info(f"Number of ICU stays: {num_icustays}")
+    logger.info(f"Number of events: {num_events}")
+    logger.info("All data checks passed successfully!")
+
     hospital = HospitalUnit(list(filtered_db.values()), binned_tensors, config)
     dataset = hospital.build_dataset(task=task)
     breakpoint()
