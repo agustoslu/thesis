@@ -8,14 +8,14 @@ cd thesis/dpnlp_lib
 pip install .
 ```
 
-## Run
+## How to Run
 You can run multiple experiments in parallel using Slurm with the following command.
 ```bash
 python main.py -m task=mortality,phenotyping data_split=iid,non-iid,dirichlet_moderate algorithm=dp-sgd, dp-ftrl
 ```
 This would launch 12 jobs using different degrees of data heterogeneity using specified algorithms.
 
-## Folder Structure For Hydra-Config Files:
+## Folder Structure For Hydra-Config Files
 ```bash
 thesis/
 ├── main.py                           
@@ -35,3 +35,5 @@ thesis/
 │       └── launcher/
 │           └── submitit_slurm.yaml  
 ```
+## Data Maps
+Data maps used when calling DataManager in builder.py can be obtained [here](https://github.com/YerevaNN/mimic3-benchmarks/tree/v1.0.0-alpha/mimic3benchmark/resources).
