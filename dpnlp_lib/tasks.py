@@ -1,114 +1,96 @@
-# elaborate on privacy-utility trade-off, benchmark DP-SGD and DP-FTRL
-
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
-from dpnlp.hospital import HospitalUnit
-from dpnlp.patient import Patient
+import torch
+from sklearn.metrics import (
+    accuracy_score,
+    roc_auc_score,
+    average_precision_score,
+)
 
 
-# tasks will call hospital and get their data
+class BaseTask(ABC):
+    @abstractmethod
+    def get_label(self): ...
 
-# class BaseTask(ABC):
-#     @abstractmethod
-#     def get_dataset(self, hospital: HospitalUnit):
-#         ...
+    @abstractmethod
+    def compute_metrics(self, y_true, y_pred): ...
 
-#     @abstractmethod
-#     def compute_metrics(self, y_true, y_pred):
-#         ...
-
-#     @property
-#     @abstractmethod
-#     def get_label(self):
-#         ...
-
-#     def run_task(self):
-#         ...
-#         raise NotImplementedError("Subclasses should implement this method.")
+    @property
+    def get_info(self): ...
 
 
-# class MortalityTask(BaseTask):
-        
-#     def get_dataset(self, patient: Patient, split_method="iid", num_clients= 2, alpha= 0.5):
-#         features = []
-#         labels = []
-#         for patient in patients: # retrieves patient.events.timeseries table as a combination of lab measurements and demographics
-#             timeseries = patient.events.timeseries
-#             features = timeseries.from_df_to_tensor() 
-#             label = patient.icustays_df["MORTALITY_INHOSPITAL"]
+class MortalityTask(BaseTask):
+    def get_label(self, patient):
+        assert len(patient.icustays_df) == 1
+        label = patient.icustays_df["MORTALITY_INHOSPITAL"].astype(int)
+        return int(label.values[0])
 
-#             features.append(features)
-#             labels.append(label)
+    def compute_metrics(self, y_true, y_pred):
+        return {
+            "roc-auc": roc_auc_score(y_true, y_pred),
+            "pr-auc": average_precision_score(y_true, y_pred),
+            "accuracy": accuracy_score(y_true, y_pred),
+        }
 
-#         dataset = MIMIC3Dataset(features, labels)
-#         train_set = self.HospitalUnit.get_train_test_split(dataset, split_ratio=0.8)
-#         logger.info(f"Trainset created with {len(train_set)} samples.")
-#         client_datasets = self.HospitalUnit.partition_dataset(train_set, split_method=split_method, num_clients=num_clients, alpha=alpha)
-#         data_distrbution = self.HospitalUnit.get_distribution(client_datasets)
-#         logger.info(f"Data distribution across clients: {data_distrbution}")
-#         return client_datasets
-    
-#     def compute_metrics(self, y_true, y_pred):
-#         from sklearn.metrics import roc_auc_score, accuracy_score
-#         return {
-#             "auroc": roc_auc_score(y_true, y_pred),
-#             "accuracy": accuracy_score(y_true, y_pred)
-#         }
-    
-#     @property
-#     def get_label(self):
-#         return "MORTALITY_INHOSPITAL"
-    
-#     #def run_task(self, hospital: HospitalUnit):
+    @property
+    def get_info(self):
+        return {"label_column": "MORTALITY_INHOSPITAL", "task_type": "binary"}
 
 
+class PhenotypeTask(BaseTask):
+    def get_label(self, patient):
+        PHENOTYPE_LIST = sorted(
+            [
+                "Acute and unspecified renal failure",
+                "Acute cerebrovascular disease",
+                "Acute myocardial infarction",
+                "Cardiac dysrhythmias",
+                "Chronic kidney disease",
+                "Chronic obstructive pulmonary disease",
+                "Complications of surgical/medical care",
+                "Conduction disorders",
+                "Congestive heart failure; nonhypertensive",
+                "Coronary atherosclerosis and related",
+                "Diabetes mellitus with complications",
+                "Diabetes mellitus without complication",
+                "Disorders of lipid metabolism",
+                "Essential hypertension",
+                "Fluid and electrolyte disorders",
+                "Gastrointestinal hemorrhage",
+                "Hypertension with complications",
+                "Other liver diseases",
+                "Other lower respiratory disease",
+                "Other upper respiratory disease",
+                "Pleurisy; pneumothorax; pulmonary collapse",
+                "Pneumonia",
+                "Respiratory failure; insufficiency; arrest",
+                "Septicemia (except in labor)",
+                "Shock",
+            ]
+        )
+        phenos = patient.events.phenotypes.copy()
+        assert len(phenos) == 1
 
-# class DecompensationTask(BaseTask):
-#     @property
-#     def label_column(self):
-#         return "DECOMPENSATION"
+        for col in self.PHENOTYPE_LIST:
+            if col not in phenos.columns:
+                phenos[col] = 0
 
-#     def get_dataset(self, hospital: HospitalUnit):
-#         
-#     def compute_metrics(self, y_true, y_pred):
-#         # AUROC, accuracy, etc.
+        phenos = phenos[self.PHENOTYPE_LIST]
+        label = phenos.iloc[0].astype(int).values
+        return torch.tensor(label, dtype=torch.float32)
 
+    def compute_metrics(self, y_true, y_pred):
+        return {
+            "macro_roc_auc": roc_auc_score(y_true, y_pred, average="macro"),
+            "micro_roc_auc": roc_auc_score(y_true, y_pred, average="micro"),
+            "weighted_roc_auc": roc_auc_score(y_true, y_pred, average="weighted"),
+            "macro_pr_auc": average_precision_score(y_true, y_pred, average="macro"),
+            "micro_pr_auc": average_precision_score(y_true, y_pred, average="micro"),
+            "weighted_pr_auc": average_precision_score(
+                y_true, y_pred, average="weighted"
+            ),
+            "accuracy": accuracy_score(y_true, y_pred),
+        }
 
-
-# class LengthOfStayTask(BaseTask):
-#     @property
-#     def label_column(self):
-#         return "LENGTH_OF_STAY"
-
-#     def get_dataset(self, hospital: HospitalUnit):
-#         # Extract features, LOS labels
-#         
-
-#     def compute_metrics(self, y_true, y_pred):
-#         # RMSE, MAE, etc. 
-
-
-# class PhenotypeTask(BaseTask):
-#     @property
-#     def label_column(self):
-#         return "PHENOTYPE"
-
-#     def get_dataset(self, hospital: HospitalUnit):
-#         # Multi-label phenotype matrix
-#         
-
-#     def compute_metrics(self, y_true, y_pred):
-#         # Macro/micro F1, etc.
-  
-
-# you could rather think of it as a main function there is nothing task specific about it, just pass args and get task from registry
-# def run_task(task_name: str, hospital: HospitalUnit):
-#     task_cls = TASK_REGISTRY.get(task_name)
-#     if task_cls is None:
-#         raise ValueError(f"Task {task_name} not registered.")
-    
-#     task = task_cls()
-#     dataset = task.get_dataset(hospital)
-#     train and get preds
-#     metrics = task.compute_metrics(y_true, y_pred)
-#     print(metrics)
+    @property
+    def get_info(self):
+        return {"label_column": "PHENOTYPE", "task_type": "multilabel - 25 classes"}

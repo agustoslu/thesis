@@ -1,15 +1,12 @@
-# TODO: run ruff and mypy / typing 
-
 import os
 import requests
 import zipfile
-#from pyaml_env import parse_config
 from pathlib import Path
 
-#config = parse_config("config.yaml")
-home_dir =Path( "/home/tanalp/thesis/dpnlp")
+home_dir = Path("/home/tanalp/thesis/dpnlp")
 DATASET_PATH = home_dir / "dataset"
-dataset_url = "https://physionet.org/static/published-projects/mimiciii-demo/mimic-iii-clinical-database-demo-1.4.zip" # use demo dataset for now, only includes 100 patients and clinical notes removed, 26 tables
+dataset_url = "https://physionet.org/static/published-projects/mimiciii-demo/mimic-iii-clinical-database-demo-1.4.zip"  # use demo dataset for now, only includes 100 patients and clinical notes removed, 26 tables
+
 
 def download_file(url, save_path):
     print(f"Downloading MIMIC-III Demo from {url}...")
@@ -22,11 +19,13 @@ def download_file(url, save_path):
     else:
         raise Exception(f"Failed. Status code: {response.status_code}")
 
+
 def extract_zip(zip_path, extraction_path):
     print(f"Extracting {zip_path} to {extraction_path}...")
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
         zip_ref.extractall(extraction_path)
     print(f"Completed!")
+
 
 if __name__ == "__main__":
     os.makedirs(DATASET_PATH, exist_ok=True)

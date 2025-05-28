@@ -1,23 +1,22 @@
 from __future__ import annotations
-from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, ClassVar, Callable
 from datetime import datetime
 import pandas as pd
+import numpy as np
 from collections import defaultdict
-from torch.utils.data import Dataset, DataLoader
-from tqdm import tqdm
+import torch
+from torch.utils.data import Dataset
 from pathlib import Path
 import logging
-from download import DATASET_PATH, home_dir
 from argparse import ArgumentParser
 from functools import cached_property
-import numpy as np
 import re
 import yaml
-from utils import enable_info_logs
 from concurrent.futures import ProcessPoolExecutor
-import torch
+from download import DATASET_PATH, home_dir
+from tasks import BaseTask
+from utils import enable_info_logs, partition_data
 
 enable_info_logs()
 logger = logging.getLogger(__name__)
@@ -495,7 +494,7 @@ class Events(PandasMixin):
         "Capillary refill rate": lambda df: Events.clean_crr(df),
         "Diastolic blood pressure": lambda df: Events.clean_dbp(df),
         "Systolic blood pressure": lambda df: Events.clean_sbp(df),
-        "Fraction inspired oxygen": lambda df: Events.clean_fio2(df), 
+        "Fraction inspired oxygen": lambda df: Events.clean_fio2(df),
         "Oxygen saturation": lambda df: Events.clean_o2sat(df),
         "Glucose": lambda df: Events.clean_lab(
             df
@@ -622,7 +621,7 @@ class Events(PandasMixin):
         self._timeseries = timeseries
         return self._timeseries
 
-    @staticmethod 
+    @staticmethod
     def to_binned_timeseries(
         timeseries: pd.DataFrame,
         stats_csv: Path | str,
@@ -634,21 +633,27 @@ class Events(PandasMixin):
         we might increase this as well since we're passing only 1/3 of features
         and DP noise + small transformer might challenge results"""
         if timeseries.empty:
-            logger.warning("Timeseries DataFrame is empty, returning empty DataFrame for patient.")
+            logger.warning(
+                "Timeseries DataFrame is empty, returning empty DataFrame for patient."
+            )
             return pd.DataFrame()
         if task == "mortality":
-            timeseries = timeseries[timeseries["HOURS"] <= 48] 
+            timeseries = timeseries[timeseries["HOURS"] <= 48]
         elif task == "phenotypes":
             pass
 
         feature_stats = pd.read_csv(stats_csv, index_col=0)
         means = feature_stats["mean"].to_dict()
         stds = feature_stats["std"].to_dict()
-        expected_cols = list(means.keys()) # when we discard hours > 48, we also lose some lab events cols we need to add them back
+        expected_cols = list(
+            means.keys()
+        )  # when we discard hours > 48, we also lose some lab events cols we need to add them back
 
         for col in expected_cols:
             if col not in timeseries.columns:
-                logger.warning(f"Column {col} is missing in timeseries, filling with NaN.")
+                logger.warning(
+                    f"Column {col} is missing in timeseries, filling with NaN."
+                )
                 timeseries[col] = np.nan
 
         timeseries["BIN"] = np.where(
@@ -663,10 +668,8 @@ class Events(PandasMixin):
             & (timeseries["BIN"] < n_timesteps)
             & (~timeseries["HOURS"].isna())
         ]
-        
-        normalize_cols = [
-            col for col in expected_cols if col in timeseries.columns
-        ]
+
+        normalize_cols = [col for col in expected_cols if col in timeseries.columns]
 
         for col in normalize_cols:
             mean = means.get(col, 0)
@@ -680,7 +683,7 @@ class Events(PandasMixin):
         bin_ends = pd.Series(
             bin_edges, name="BIN_END_HOURS", index=np.arange(n_timesteps)
         )
-        norm_cols = [f"{col}_NORM" for col in expected_cols] # keep the same cols order
+        norm_cols = [f"{col}_NORM" for col in expected_cols]  # keep the same cols order
         binned_timeseries = timeseries[["BIN"] + norm_cols].copy()
         binned_timeseries.columns = ["BIN"] + [
             col.replace("_NORM", "") for col in norm_cols
@@ -807,12 +810,12 @@ class Events(PandasMixin):
             self._timeseries = timeseries
 
         return self._cleaned_events, self._timeseries
-    
+
     @staticmethod
     def get_cleaned_events_static(events_obj):
         return events_obj.get_cleaned_events()
 
-    @property # since they are cached they will not call get_cleaned_events again
+    @property  # since they are cached they will not call get_cleaned_events again
     def cleaned_events(self) -> pd.DataFrame:
         if self._cleaned_events is None:
             self.get_cleaned_events()
@@ -990,7 +993,7 @@ class Patient(PandasMixin):
     @staticmethod
     def process_patient(pid_patient_tuple):
         pid, patient = pid_patient_tuple
-        
+
         stays = ICUStay.filter_admissions_on_nb_icustays(patient.icustays_df)
         if len(patient.icu_stays) > 1:
             hadm_ids = [stay.HADM_ID for stay in patient.icu_stays]
@@ -1079,9 +1082,6 @@ class Patient(PandasMixin):
 
         return dict(patients), filtered_patients
 
-    # TODO: followed the same logic as in their code but not quite sure if I need to separete static vars since a patient with more timesteps will
-    # also have more influence on the final stats.
-
     @staticmethod
     def get_stats(all_timeseries: list, columns_of_interest: list) -> pd.DataFrame:
         if not all_timeseries:
@@ -1130,11 +1130,25 @@ class Patient(PandasMixin):
 
 class MIMIC3Dataset(Dataset):
     def __init__(self, features, labels):
-        self.features = features
-        self.labels = labels
+        """
+        features: list or array of feature arrays/tensors (one per patient)
+        labels: list or array of labels (int, float, or np.array for multi-label e.g. phenotypes)
+        """
+        self.features = [
+            torch.tensor(f, dtype=torch.float32) if not torch.is_tensor(f) else f
+            for f in features
+        ]
+
+        if isinstance(labels[0], (list, tuple, np.ndarray)):
+            self.labels = [torch.tensor(l, dtype=torch.float32) for l in labels]
+        else:
+            self.labels = torch.tensor(
+                labels,
+                dtype=torch.float32 if isinstance(labels[0], float) else torch.long,
+            )
 
     def __len__(self):
-        return len(self.labels)
+        return len(self.features)
 
     def __getitem__(self, idx):
         feature = self.features[idx]
@@ -1142,21 +1156,49 @@ class MIMIC3Dataset(Dataset):
         return feature, label
 
 
-# TODO:
-# csv dump data after processing
-# might turn it into typer cli app where they can engage with the dataset, adding more functionalities, sqlalchemy, duckdb if time allows
+class HospitalUnit:
+    def __init__(self, patients, config):
+        self.patients = patients
+        self.binned_tensors = binned_tensors
+        self.config = config
 
-# class Hospital(Dataset):
-# def get_split_ratio
-# def show_distribution / simple logger
+    def get_features(self):
+        return [bt["input_tensor"] for bt in self.binned_tensors]
 
-# get task specific labels, build dataset by calling MIMIC3Dataset
-# split train, dev, test sets
-# pass trainset to iid, non-iid, dirichlet partitioning and get relevant client datasets to build 2 hospitals
-# pass the output to the task when called
-# which then will use def run_task where we will pass the dataset and the model and bridge client.py and server.py
-# DP-SGD case will use its own optimizer and privacy-accounting https://github.com/microsoft/dp-transformers/blob/main/examples/nlg-reddit/author-level-dp/fine-tune-dp.py
-# DP-FTRL will use its own optimizer and privacy-accounting https://github.com/google-research/DP-FTRL
+    def get_labels(self, task: "BaseTask"):
+        return [task.get_label(patient) for patient in self.patients]
+
+    def build_dataset(self, task: BaseTask):
+        features = self.get_features()
+        labels = self.get_labels(task)
+        return MIMIC3Dataset(features, labels)
+
+    def split_dataset(self, dataset, split_ratio=0.8):
+        total_len = len(dataset)
+        train_len = int(total_len * split_ratio)
+        dev_len = int((total_len - train_len) / 2)
+        test_len = total_len - train_len - dev_len
+        return train_len, dev_len, test_len
+
+    def partition_dataset(
+        self, dataset, split_method="iid", num_clients=2, alpha=0.5, is_shuffle=True
+    ):
+        train_set, dev_set, test_set = self.split_dataset(dataset)
+        client_datasets = partition_data(
+            train_set,
+            split_method,
+            num_clients=num_clients,
+            alpha=alpha,
+            is_shuffle=is_shuffle,
+        )
+        return client_datasets, dev_set, test_set
+
+    def show_distribution(self, datasets, split_method="iid"):
+        logger.info(f"Created {len(datasets)} hospital units.")
+        logger.info(f"Used split method: {split_method}")
+        for unit_id, ds in enumerate(datasets):
+            num_patients = len(ds)
+            logger.info(f"Hospital Unit {unit_id}: {num_patients} patients.")
 
 
 if __name__ == "__main__":
@@ -1186,6 +1228,7 @@ if __name__ == "__main__":
     logger.info(f"Filtered patients (single stay, no transfers): {len(filtered_db)}")
     all_timeseries = []
     binned_timeseries = []
+    binned_tensors = []
     # quick fix for now to add missing variables to timeseries if the patient has them missing
     columns_of_interest = [
         "Capillary refill rate",
@@ -1219,8 +1262,11 @@ if __name__ == "__main__":
         events_objs.append(events)
 
     with ProcessPoolExecutor(max_workers=8) as executor:
-        cleaned_results = list(executor.map(Events.get_cleaned_events_static, events_objs))
+        cleaned_results = list(
+            executor.map(Events.get_cleaned_events_static, events_objs)
+        )
 
+    breakpoint()
     for events in events_objs:
         timeseries = events.timeseries
         binned_timeseries_df = Events.to_binned_timeseries(
@@ -1231,20 +1277,31 @@ if __name__ == "__main__":
         )
         input_cols = [col for col in binned_timeseries_df.columns]
         mask = ~binned_timeseries_df[input_cols].isna()
-        mask_tensor = torch.tensor(mask.values, dtype=torch.bool) 
-        mask_impute = (binned_timeseries_df[input_cols] == 0.0)
-        input_tensor = torch.tensor(binned_timeseries_df[input_cols].fillna(0).values, dtype=torch.float32)
+        mask_tensor = torch.tensor(mask.values, dtype=torch.bool)
+        mask_impute = binned_timeseries_df[input_cols] == 0.0
+        input_tensor = torch.tensor(
+            binned_timeseries_df[input_cols].fillna(0).values, dtype=torch.float32
+        )
 
         breakpoint()
 
         binned_timeseries.append(binned_timeseries_df)
-    breakpoint()    
-        # for col in columns_of_interest:
-        #     if col not in timeseries.columns:
-        #         timeseries[col] = np.nan
-        
-        # if not timeseries.empty:
-        #      all_timeseries.append(timeseries)
+        binned_tensors.append(
+            {
+                "input_tensor": input_tensor,
+                "mask_tensor": mask_tensor,
+                "mask_impute": mask_impute,
+            }
+        )
+    hospital = HospitalUnit(list(filtered_db.values()), binned_tensors, config)
+    dataset = hospital.build_dataset(task=task)
+    breakpoint()
+    # for col in columns_of_interest:
+    #     if col not in timeseries.columns:
+    #         timeseries[col] = np.nan
+
+    # if not timeseries.empty:
+    #      all_timeseries.append(timeseries)
 
     # stats_df = Patient.get_stats(all_timeseries, columns_of_interest=columns_of_interest)
     # stats_df.to_csv(DATASET_PATH / "features_stats_3.csv", index=False)
