@@ -14,9 +14,9 @@ from functools import cached_property
 import re
 import yaml
 from concurrent.futures import ProcessPoolExecutor
-from download import DATASET_PATH, home_dir
-from tasks import BaseTask
-from utils import enable_info_logs, partition_data
+from .download import DATASET_PATH_DEMO, DATASET_PATH, home_dir
+from .tasks import BaseTask
+from .partitioner import enable_info_logs, partition_data
 
 enable_info_logs()
 logger = logging.getLogger(__name__)
