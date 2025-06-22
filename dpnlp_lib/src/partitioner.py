@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from typing import Any, List, Dict, Tuple, Optional
 import logging
-from .utils import enable_info_logs
+from utils import enable_info_logs
 
 enable_info_logs()
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def iid_esize_split(
         )
         all_idxs = list(set(all_idxs) - set(dict_users[i]))
         data_loaders[i] = DataLoader(
-            DatasetSplit(dataset, dict_users[i]), batch_size=32, shuffle=is_shuffle
+            DatasetSplit(dataset, dict_users[i]), batch_size=4, shuffle=is_shuffle
         )
     return data_loaders
 
@@ -170,18 +170,18 @@ def make_double_stochastic(x: np.ndarray) -> np.ndarray:
         csum = x.sum(0)
         n += 1
     return x
-
+ 
 
 def partition_data(
-    dataset: Dataset, iid: int, is_shuffle: bool = True
+    dataset: Dataset, iid: int, num_clients: int, is_shuffle: bool = True
 ) -> List[DataLoader]:
     if is_shuffle:
         if iid == 1:
-            data_loaders = iid_esize_split(dataset, is_shuffle)
+            data_loaders = iid_esize_split(dataset, num_clients, is_shuffle)
         elif iid == 0:
-            data_loaders = niid_esize_split(dataset, is_shuffle)
+            data_loaders = niid_esize_split(dataset, num_clients, is_shuffle)
         elif iid == -1:
-            data_loaders = dirichlet_split(dataset, is_shuffle)
+            data_loaders = dirichlet_split(dataset, num_clients, is_shuffle)
         else:
             raise ValueError(f"Data Distribution pattern `{iid}` not implemented ")
     else:

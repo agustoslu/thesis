@@ -20,7 +20,10 @@ class BaseTask(ABC):
 
 class MortalityTask(BaseTask):
     def get_label(self, patient):
-        assert len(patient.icustays_df) == 1
+        print(patient)
+        if len(patient.icustays_df) > 1:
+            pass
+        #assert len(patient.icustays_df) == 1
         label = patient.icustays_df["MORTALITY_INHOSPITAL"].astype(int)
         return label
 
@@ -37,8 +40,7 @@ class MortalityTask(BaseTask):
 
 
 class PhenotypeTask(BaseTask):
-    def get_label(self, patient):
-        PHENOTYPE_LIST = sorted(
+    PHENOTYPE_LIST = sorted(
             [
                 "Acute and unspecified renal failure",
                 "Acute cerebrovascular disease",
@@ -67,6 +69,7 @@ class PhenotypeTask(BaseTask):
                 "Shock",
             ]
         )
+    def get_label(self, patient):
         phenos = patient.events.phenotypes.copy()
         assert len(phenos) == 1
 

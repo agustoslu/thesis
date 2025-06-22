@@ -6,7 +6,8 @@ import pandas as pd
 import numpy as np
 from collections import defaultdict
 import torch
-from torch.utils.data import Dataset, random_split
+from torch.utils.data import Dataset, random_split, DataLoader
+from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 from pathlib import Path
 import logging
 from argparse import ArgumentParser
@@ -14,9 +15,9 @@ from functools import cached_property
 import re
 import yaml
 from concurrent.futures import ProcessPoolExecutor
-from .download import DATASET_PATH_DEMO, DATASET_PATH, home_dir
-from .tasks import BaseTask
-from .partitioner import enable_info_logs, partition_data
+from download import DATASET_PATH_DEMO, DATASET_PATH, home_dir
+from tasks import BaseTask, MortalityTask, PhenotypeTask
+from partitioner import enable_info_logs, partition_data
 
 enable_info_logs()
 logger = logging.getLogger(__name__)
@@ -99,6 +100,12 @@ class PandasMixin:
         df = pd.read_csv(path, header=header, index_col=index_col)
         return self.standardize_columns(df, case=case)
 
+    def csv_to_df_batch(
+        self, path: Path, header=0, index_col=None, case: str = "upper"
+    ) -> pd.DataFrame:
+        chunks = pd.read_csv(path, header=header, index_col=index_col, chunksize=10**6, compression="gzip", low_memory=True)
+        df = pd.concat(chunks, ignore_index=True, sort=False)
+        return self.standardize_columns(df, case=case)
 
 @dataclass
 class DataManager(PandasMixin):
@@ -124,6 +131,11 @@ class DataManager(PandasMixin):
         self, table1: pd.DataFrame, table2: pd.DataFrame
     ) -> pd.DataFrame:
         """Merge two tables on SUBJECT_ID."""
+        logger.warning(
+            "Merging on SUBJECT_ID only. This may lead to incorrect results if the tables are not aligned by HADM_ID."
+        )
+        logger.warning("Table passed to merge_on_subject_admission: %s", table1.columns)
+        logger.warning("Table passed to merge_on_subject_admission: %s", table2.columns)
         return table1.merge(
             table2, how="inner", left_on=["SUBJECT_ID"], right_on=["SUBJECT_ID"]
         )
@@ -132,6 +144,11 @@ class DataManager(PandasMixin):
         self, table1: pd.DataFrame, table2: pd.DataFrame
     ) -> pd.DataFrame:
         """Merge two tables on SUBJECT_ID and HADM_ID."""
+        logger.warning(
+            "Merging on SUBJECT_ID and HADM_ID. Ensure both tables have these columns."
+        )
+        logger.warning("Table passed to merge_on_subject_admission: %s", table1.columns)
+        logger.warning("Table passed to merge_on_subject_admission: %s", table2.columns)
         return table1.merge(
             table2,
             how="inner",
@@ -142,10 +159,13 @@ class DataManager(PandasMixin):
     def load_all_tables(self, data_path: Path) -> Dict[str, pd.DataFrame]:
         """Load all .csv files from MIMIC directory."""
         dataframes = {}
-        for file in data_path.glob("*.csv"):
-            df = self.csv_to_df(file)
+        for file in data_path.glob("*.csv"): # demo
+        #for file in data_path.glob("*.csv.gz"):
+            logger.info(f"Loading {file.name}...")
+            #df = self.csv_to_df_batch(file)
+            df= self.csv_to_df(file)  # demo 
             dataframes[file.stem.lower()] = df
-
+        
         # perform some early filtering and add them as additional tables
         if "icustays" in dataframes and "admissions" in dataframes:
             dataframes["stays_admits"] = self.merge_on_subject_admission(
@@ -403,7 +423,8 @@ class ICUStay:
 
         to_keep = to_keep.loc[
             (to_keep.ICUSTAY_ID >= min_nb_stays) & (to_keep.ICUSTAY_ID <= max_nb_stays)
-        ][["HADM_ID"]]
+        ][["HADM_ID"]] 
+        
 
         filtered_stays_df = icustays_df.merge(to_keep, how="inner", on="HADM_ID")
         valid_hadm_ids = set(filtered_stays_df.HADM_ID)
@@ -1042,46 +1063,67 @@ class Patient(PandasMixin):
             )
             return None
 
+    def batch_generator(pids: List[int], batch_size: int):
+        for i in range(0, len(pids), batch_size):
+            yield pids[i : i + batch_size]
+
     @classmethod
     def build_patient_database(
         cls,
         tables: Dict[str, pd.DataFrame],
         filter_single_stay: bool = True,
         csv_path: Optional[str] = None,
+        batch_size: int = 1000,
+        max_workers: int = 8,
     ) -> Tuple[Dict[int, "Patient"], Dict[int, "Patient"]]:
-        """Build a patient database from the provided tables"""
-        patients = defaultdict(lambda: Patient(None))
-        for table_name, df in tables.items():
-            if "SUBJECT_ID" not in df.columns:
-                continue
-            for subject_id, sub_df in df.groupby("SUBJECT_ID"):
-                if patients[subject_id].subject_id is None:
-                    patients[subject_id].subject_id = subject_id
-                patients[subject_id].add_table(table_name, sub_df)
 
         merged_stays = tables.get("stays_admits_patients")
         if merged_stays is None:
             raise ValueError("stays_admits_patients table is missing.")
 
-        for _, row in merged_stays.iterrows():
-            subject_id = row["SUBJECT_ID"]
-            if subject_id in patients:
-                patients[subject_id].add_icustay(row.to_dict(), merged_stays)
+        subject_ids = merged_stays["SUBJECT_ID"].unique()
+        all_patients = {}
+        all_filtered_patients = {}
 
-        logger.info("Filtering patients...")
-        with ProcessPoolExecutor(max_workers=8) as executor:
-            results = list(executor.map(cls.process_patient, patients.items()))
-        filtered_patients = {
-            pid: patient
-            for result in results
-            if result is not None
-            for pid, patient in [result]
-        }
+        for batch_subject_ids in cls.batch_generator(subject_ids, batch_size):
+            batch_tables = {
+                name: df[df["SUBJECT_ID"].isin(batch_subject_ids)]
+                for name, df in tables.items()
+                if "SUBJECT_ID" in df.columns
+            }
+            patients = defaultdict(lambda: Patient(None))
+            
+            for table_name, df in batch_tables.items():
+                for subject_id, sub_df in df.groupby("SUBJECT_ID"):
+                    if patients[subject_id].subject_id is None:
+                        patients[subject_id].subject_id = subject_id
+                    patients[subject_id].add_table(table_name, sub_df)
+            
+            for _, row in merged_stays[merged_stays["SUBJECT_ID"].isin(batch_subject_ids)].iterrows():
+                subject_id = row["SUBJECT_ID"]
+                if subject_id in patients:
+                    patients[subject_id].add_icustay(row.to_dict(), merged_stays)
+            
+            logger.info(f"Filtering patients for batch {batch_subject_ids[0]}-{batch_subject_ids[-1]}...")
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(cls.process_patient, patients.items()))
+            filtered_patients = {
+                pid: patient
+                for result in results
+                if result is not None
+                for pid, patient in [result]
+            }
+            logger.info(f"Batch filtered: {len(filtered_patients)} patients")
+            all_filtered_patients.update(filtered_patients)
+            
+            del patients
+            del filtered_patients
+        all_patients = None    
 
-        logger.info(f"Total patients after filtering: {len(filtered_patients)}")
+        logger.info(f"Total patients after all batches: {len(all_filtered_patients)}")
+        return all_patients, all_filtered_patients
 
-        return dict(patients), filtered_patients
-
+            
     @staticmethod
     def get_stats(all_timeseries: list, columns_of_interest: list) -> pd.DataFrame:
         if not all_timeseries:
@@ -1135,7 +1177,7 @@ class MIMIC3Dataset(Dataset):
             for f in features
         ]
 
-        if isinstance(labels[0], (list, tuple, np.ndarray)):
+        if isinstance(labels[0], (list, tuple, np.ndarray, pd.Series)):
             self.labels = [torch.tensor(l, dtype=torch.float32) for l in labels]
         else:
             self.labels = torch.tensor(
@@ -1153,18 +1195,17 @@ class MIMIC3Dataset(Dataset):
 
 
 class HospitalUnit:
-    def __init__(self, patients, config):
+    def __init__(self, patients, padded_seq):
         self.patients = patients
-        self.binned_tensors = binned_tensors
-        self.config = config
+        self.padded_seq = padded_seq
 
     def get_features(self):
-        return [bt["input_tensor"] for bt in self.binned_tensors]
+        return [padded_seq for padded_seq in self.padded_seq]
 
-    def get_labels(self, task: "BaseTask"):
+    def get_labels(self, task):
         return [task.get_label(patient) for patient in self.patients]
 
-    def build_dataset(self, task: BaseTask):
+    def build_dataset(self, task):
         features = self.get_features()
         labels = self.get_labels(task)
         return MIMIC3Dataset(features, labels)
@@ -1179,44 +1220,91 @@ class HospitalUnit:
         return random_split(dataset, lengths, generator=generator)
 
     def partition_dataset(
-        self, dataset, split_method="iid", num_clients=2, alpha=0.5, is_shuffle=True
+        self, dataset, split_method=1, num_clients=2, alpha=0.5, is_shuffle=True
     ):
         train_set, dev_set, test_set = self.split_dataset(dataset)
         client_datasets = partition_data(
             train_set,
             split_method,
             num_clients=num_clients,
-            alpha=alpha,
+            #alpha=alpha,
             is_shuffle=is_shuffle,
         )
         return client_datasets, dev_set, test_set
 
-    def show_distribution(self, datasets, split_method="iid"):
-        logger.info(f"Created {len(datasets)} hospital units.")
+    @staticmethod
+    def get_hospital_unit_info(ds):
+        if hasattr(ds, "dataset"):
+            dataset = ds.dataset
+        else:
+            dataset = ds
+
+        num_patients = len(dataset)
+        labels = []
+        for i in range(num_patients):
+            sample = dataset[i]
+            if isinstance(sample, (tuple, list)) and len(sample) > 1:
+                labels.append(sample[1].item() if hasattr(sample[1], "item") else sample[1])
+            elif isinstance(sample, dict) and "label" in sample:
+                labels.append(sample["label"])
+        label_counts = {}
+        if labels:
+            unique, counts = np.unique(labels, return_counts=True)
+            label_counts = dict(zip(unique, counts))
+        return {
+            "num_patients": num_patients,
+            "label_distribution": label_counts,
+            "example_labels": labels[:5],
+        }
+    
+    @classmethod
+    def show_distribution(cls, client_datasets, num_clients, split_method="iid"):
+        logger.info(f"Created {num_clients} hospital units.")
         logger.info(f"Used split method: {split_method}")
-        for unit_id, ds in enumerate(datasets):
-            num_patients = len(ds)
-            logger.info(f"Hospital Unit {unit_id}: {num_patients} patients.")
+        for unit_id in range(num_clients):
+            ds = client_datasets[unit_id]
+            info = cls.get_hospital_unit_info(ds)
+            logger.info(
+                f"Hospital Unit {unit_id}: {info['num_patients']} patients, "
+                f"Label distribution: {info['label_distribution']}, "
+                f"Example labels: {info['example_labels']}"
+            )
 
 
 if __name__ == "__main__":
     logger.info("Loading all MIMIC tables...")
 
     data_manager = DataManager(
-        data_path=DATASET_PATH / "mimic-iii-clinical-database-demo-1.4",
-        diagnoses_map_path=DATASET_PATH
-        / "mimic-iii-clinical-database-demo-1.4/D_ICD_DIAGNOSES.csv",
-        diagnoses_path=DATASET_PATH
-        / "mimic-iii-clinical-database-demo-1.4/DIAGNOSES_ICD.csv",
-        phenotype_definitions_path=home_dir
+        data_path=DATASET_PATH_DEMO,
+        diagnoses_map_path=DATASET_PATH_DEMO
+        / "D_ICD_DIAGNOSES.csv",
+        diagnoses_path=DATASET_PATH_DEMO
+        / "DIAGNOSES_ICD.csv",
+        phenotype_definitions_path=Path("/home/tanalp/thesis/dpnlp")
         / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
-        hcup_ccs_2015_path=home_dir
+        hcup_ccs_2015_path=Path("/home/tanalp/thesis/dpnlp")
         / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
-        var_map_path=home_dir / "mimic3benchmark/resources/itemid_to_variable_map.csv",
-        var_ranges_path=home_dir / "mimic3benchmark/resources/variable_ranges.csv",
+        var_map_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/itemid_to_variable_map.csv",
+        var_ranges_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/variable_ranges.csv",
         variable_column="LEVEL2",
     )
+    
+    #################### FULL MIMIC-III ###########################
 
+    # data_manager = DataManager(
+    #     data_path=DATASET_PATH,
+    #     diagnoses_map_path=DATASET_PATH
+    #     / "D_ICD_DIAGNOSES.csv.gz",
+    #     diagnoses_path=DATASET_PATH
+    #     / "DIAGNOSES_ICD.csv.gz",
+    #     phenotype_definitions_path=Path("/home/tanalp/thesis/dpnlp")
+    #     / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
+    #     hcup_ccs_2015_path=Path("/home/tanalp/thesis/dpnlp")
+    #     / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
+    #     var_map_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/itemid_to_variable_map.csv",
+    #     var_ranges_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/variable_ranges.csv",
+    #     variable_column="LEVEL2",
+    # )
     ################################################
     # Build Patient Database
     ################################################
@@ -1236,6 +1324,9 @@ if __name__ == "__main__":
     all_timeseries = []
     binned_timeseries = []
     binned_tensors = []
+    concat_tensors = []
+    lengths = []
+    padded_seq = []
     # quick fix for now to add missing variables to timeseries if the patient has them missing
     columns_of_interest = [
         "Capillary refill rate",
@@ -1273,22 +1364,25 @@ if __name__ == "__main__":
             executor.map(Events.get_cleaned_events_static, events_objs)
         )
 
+
+# factor out this inside HospitalUnit class - also do the padding with collate
+
     for events in events_objs:
         timeseries = events.timeseries
         binned_timeseries_df = Events.to_binned_timeseries(
             timeseries,
-            stats_csv=DATASET_PATH / "features_stats_3.csv",
+            stats_csv="/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv",
             n_timesteps=24,
             task="mortality",
         )
         input_cols = [col for col in binned_timeseries_df.columns]
         mask = ~binned_timeseries_df[input_cols].isna()
-        mask_tensor = torch.tensor(mask.values, dtype=torch.bool)
+        mask_tensor = torch.tensor(mask.values, dtype=torch.float32)
         mask_impute = binned_timeseries_df[input_cols] == 0.0
+        mask_impute = torch.tensor(mask_impute.values, dtype=torch.float32)
         input_tensor = torch.tensor(
             binned_timeseries_df[input_cols].fillna(0).values, dtype=torch.float32
         )
-
         binned_timeseries.append(binned_timeseries_df)
         binned_tensors.append(
             {
@@ -1297,6 +1391,30 @@ if __name__ == "__main__":
                 "mask_impute": mask_impute,
             }
         )
+        concat_tensor = torch.cat(
+        [input_tensor, mask_tensor.float(), mask_impute.float()], dim=-1
+        )
+        concat_tensors.append(concat_tensor)
+        lengths.append(concat_tensor.shape[0])
+    
+        
+    valid_concat_tensors = [t for t in concat_tensors if t is not None and t.shape[0] > 0]
+    padded = pad_sequence(valid_concat_tensors, batch_first=True, padding_value=0.0)
+    for t in padded:
+        padded_seq.append(t)
+
+
+    ####################################################
+    # Create HospitalUnit and Arrange Data Heterogeneity
+    ####################################################
+
+    task = MortalityTask() # pass config args
+    hospital = HospitalUnit(list(filtered_db.values()), padded_seq)
+    dataset = hospital.build_dataset(task=task)
+    train, test, dev = hospital.split_dataset(dataset, split_ratio=0.8, seed=42)  
+    client_datasets, dev_set, test_set = hospital.partition_dataset(train, split_method=1, num_clients=2, alpha=0.5, is_shuffle=True)
+    hospital.show_distribution(client_datasets, num_clients=2, split_method="iid")
+    breakpoint()
 
     ################################################
     # Test cases
@@ -1328,8 +1446,8 @@ if __name__ == "__main__":
     logger.info(f"Number of events: {num_events}")
     logger.info("All data checks passed successfully!")
 
-    hospital = HospitalUnit(list(filtered_db.values()), binned_tensors, config)
-    dataset = hospital.build_dataset(task=task)
+
+   
     breakpoint()
     # for col in columns_of_interest:
     #     if col not in timeseries.columns:

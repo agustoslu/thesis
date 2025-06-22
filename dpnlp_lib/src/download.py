@@ -4,8 +4,9 @@ import zipfile
 from pathlib import Path
 
 home_dir = Path(__file__).parent
-DATASET_PATH_DEMO = home_dir / "dataset"
-DATASET_PATH = home_dir / "dataset/physionet.org/files/mimiciii/1.4"
+DATASET_PATH_DEMO = home_dir / "dataset/mimic-iii-clinical-database-demo-1.4"
+#DATASET_PATH = home_dir / "dataset/physionet.org/files/mimiciii/1.4"
+DATASET_PATH = Path("/home/tanalp/physionet.org/files/mimiciii/1.4")
 dataset_url = "https://physionet.org/static/published-projects/mimiciii-demo/mimic-iii-clinical-database-demo-1.4.zip"  # use demo dataset for now, only includes 100 patients and clinical notes removed, 26 tables
 
 def download_file(url, save_path):
