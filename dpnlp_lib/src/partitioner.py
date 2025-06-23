@@ -3,6 +3,7 @@
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
+from torch.nn.utils.rnn import pad_sequence
 from typing import Any, List, Dict, Tuple, Optional
 import logging
 from utils import enable_info_logs
@@ -24,8 +25,21 @@ class DatasetSplit(Dataset):
         return feature, label
 
 
+def collate_fn(
+    batch: List[Tuple[Any, Any]],
+) -> Tuple[torch.Tensor, List[int], torch.Tensor]:
+    features, labels = zip(*batch)
+    lengths = [f.shape[0] for f in features]
+    padded_features = pad_sequence(features, batch_first=True, padding_value=0.0)
+    labels = torch.stack(labels, dim=0)
+    return padded_features, lengths, labels
+
+
 def iid_esize_split(
-    dataset: Dataset, num_clients: int, is_shuffle: bool = True
+    dataset: Dataset,
+    num_clients: int,
+    is_shuffle: bool = True,
+    is_collate_fn: bool = True,
 ) -> List[DataLoader]:
     num_samples = len(dataset)
     num_samples_per_client = int(num_samples / num_clients)
@@ -39,13 +53,19 @@ def iid_esize_split(
         )
         all_idxs = list(set(all_idxs) - set(dict_users[i]))
         data_loaders[i] = DataLoader(
-            DatasetSplit(dataset, dict_users[i]), batch_size=4, shuffle=is_shuffle
+            DatasetSplit(dataset, dict_users[i]),
+            batch_size=4,
+            shuffle=is_shuffle,
+            collate_fn=collate_fn if is_collate_fn else None,
         )
     return data_loaders
 
 
 def niid_esize_split(
-    dataset: Dataset, num_clients: int, is_shuffle: bool = True
+    dataset: Dataset,
+    num_clients: int,
+    is_shuffle: bool = True,
+    is_collate_fn: bool = True,
 ) -> List[DataLoader]:
     num_samples = len(dataset)
     num_shards = 2 * num_clients
@@ -78,6 +98,7 @@ def niid_esize_split(
             DatasetSplit(dataset, dict_users[i]),
             batch_size=32,
             shuffle=is_shuffle,
+            collate_fn=collate_fn if is_collate_fn else None,
         )
     return data_loaders
 
@@ -125,6 +146,7 @@ def dirichlet_split(
     is_shuffle: bool,
     double_stochastic: bool = True,
     alpha: float = 0.5,
+    is_collate_fn: bool = True,
 ) -> List[DataLoader]:
     num_samples = len(dataset)
     data_loaders: List[DataLoader] = [None] * num_clients
@@ -153,7 +175,10 @@ def dirichlet_split(
                 random_seed=42,
             )
         data_loaders[client] = DataLoader(
-            DatasetSplit(dataset, sampleOfID[client]), batch_size=32, shuffle=is_shuffle
+            DatasetSplit(dataset, sampleOfID[client]),
+            batch_size=32,
+            shuffle=is_shuffle,
+            is_collate_fn=collate_fn if is_collate_fn else None,
         )
     return data_loaders
 
@@ -170,20 +195,30 @@ def make_double_stochastic(x: np.ndarray) -> np.ndarray:
         csum = x.sum(0)
         n += 1
     return x
- 
+
 
 def partition_data(
-    dataset: Dataset, iid: int, num_clients: int, is_shuffle: bool = True
+    dataset: Dataset,
+    iid: int,
+    num_clients: int,
+    is_shuffle: bool = True,
+    is_collate_fn: bool = True,
 ) -> List[DataLoader]:
     if is_shuffle:
         if iid == 1:
-            data_loaders = iid_esize_split(dataset, num_clients, is_shuffle)
+            data_loaders = iid_esize_split(
+                dataset, num_clients, is_shuffle, is_collate_fn
+            )
         elif iid == 0:
-            data_loaders = niid_esize_split(dataset, num_clients, is_shuffle)
+            data_loaders = niid_esize_split(
+                dataset, num_clients, is_shuffle, is_collate_fn
+            )
         elif iid == -1:
-            data_loaders = dirichlet_split(dataset, num_clients, is_shuffle)
+            data_loaders = dirichlet_split(
+                dataset, num_clients, is_shuffle, is_collate_fn
+            )
         else:
             raise ValueError(f"Data Distribution pattern `{iid}` not implemented ")
     else:
-        data_loaders = iid_esize_split(dataset, is_shuffle)
+        data_loaders = iid_esize_split(dataset, is_shuffle, is_collate_fn)
     return data_loaders
