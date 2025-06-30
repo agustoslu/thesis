@@ -5,7 +5,7 @@ Differentially Private NLP for Medical Records
 ```bash
 git clone https://github.com/agustoslu/thesis
 cd thesis/dpnlp_lib
-pip install .
+pip install -e .
 ```
 
 ## How to Run
