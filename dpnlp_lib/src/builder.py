@@ -120,12 +120,14 @@ class DataManager(PandasMixin):
     var_map_path: Path
     var_ranges_path: Path
     variable_column: str = "LEVEL2"
+    #stats_path: Path 
 
     # lazy loading
     _phenotype_definitions: Optional[Dict] = field(default=None, init=False)
     _diagnoses: Optional[pd.DataFrame] = field(default=None, init=False)
     _var_map: Optional[pd.DataFrame] = field(default=None, init=False)
     _var_ranges: Optional[pd.DataFrame] = field(default=None, init=False)
+    #_stats: Optional[pd.DataFrame] = field(default=None, init=False)
 
     def merge_on_subject(
         self, table1: pd.DataFrame, table2: pd.DataFrame
@@ -295,6 +297,44 @@ class DataManager(PandasMixin):
             left_on=["SUBJECT_ID", "HADM_ID"],
             right_on=["SUBJECT_ID", "HADM_ID"],
         )
+    
+    @cached_property
+    def get_stats(self, all_timeseries: list, columns_of_interest: list) -> pd.DataFrame:
+        if not all_timeseries:
+            return pd.DataFrame()
+
+        df = pd.concat(all_timeseries, ignore_index=True)
+        df = df[columns_of_interest].apply(pd.to_numeric, errors="coerce")
+
+        stats = []
+        for col in columns_of_interest:
+            vals = df[col].values.flatten()
+            vals = vals[~np.isnan(vals)]
+            if len(vals) == 0:
+                stats.append(
+                    {
+                        "VARIABLE": col,
+                        "mean": np.nan,
+                        "std": np.nan,
+                        "min": np.nan,
+                        "max": np.nan,
+                        "count": 0,
+                    }
+                )
+            else:
+                stats.append(
+                    {
+                        "VARIABLE": col,
+                        "mean": np.round(np.mean(vals), 3),
+                        "std": np.round(np.std(vals), 3),
+                        "min": np.round(np.min(vals), 3),
+                        "max": np.round(np.max(vals), 3),
+                        "count": len(vals),
+                    }
+                )
+        stats_df = pd.DataFrame(stats)
+        self._stats = stats_df
+        return self._stats
 
 
 @dataclass
@@ -722,6 +762,7 @@ class Events(PandasMixin):
         binned_timeseries = binned_timeseries[cols]
         return binned_timeseries  # BIN, lab events, demographics, BIN_END_HOURS
 
+
     def validate_events(
         self, events_df: pd.DataFrame, icustays_df: pd.DataFrame
     ) -> bool:
@@ -1123,44 +1164,6 @@ class Patient(PandasMixin):
         logger.info(f"Total patients after all batches: {len(all_filtered_patients)}")
         return all_patients, all_filtered_patients
 
-            
-    @staticmethod
-    def get_stats(all_timeseries: list, columns_of_interest: list) -> pd.DataFrame:
-        if not all_timeseries:
-            return pd.DataFrame()
-
-        df = pd.concat(all_timeseries, ignore_index=True)
-        df = df[columns_of_interest].apply(pd.to_numeric, errors="coerce")
-
-        stats = []
-        for col in columns_of_interest:
-            vals = df[col].values.flatten()
-            vals = vals[~np.isnan(vals)]
-            if len(vals) == 0:
-                stats.append(
-                    {
-                        "VARIABLE": col,
-                        "mean": np.nan,
-                        "std": np.nan,
-                        "min": np.nan,
-                        "max": np.nan,
-                        "count": 0,
-                    }
-                )
-            else:
-                stats.append(
-                    {
-                        "VARIABLE": col,
-                        "mean": np.round(np.mean(vals), 3),
-                        "std": np.round(np.std(vals), 3),
-                        "min": np.round(np.min(vals), 3),
-                        "max": np.round(np.max(vals), 3),
-                        "count": len(vals),
-                    }
-                )
-        stats_df = pd.DataFrame(stats)
-        return stats_df
-
     def __repr__(self):
         careunits = (
             list(self.icustays_df["FIRST_CAREUNIT"].unique())
@@ -1198,6 +1201,7 @@ class HospitalUnit:
     def __init__(self, patients, padded_seq):
         self.patients = patients
         self.padded_seq = padded_seq
+        #self.task = task
 
     def get_features(self):
         return [padded_seq for padded_seq in self.padded_seq]
@@ -1231,7 +1235,7 @@ class HospitalUnit:
             is_shuffle=is_shuffle,
         )
         return client_datasets, dev_set, test_set
-
+    
     @staticmethod
     def get_hospital_unit_info(ds):
         if hasattr(ds, "dataset"):
@@ -1250,7 +1254,7 @@ class HospitalUnit:
         label_counts = {}
         if labels:
             unique, counts = np.unique(labels, return_counts=True)
-            label_counts = dict(zip(unique, counts))
+            label_counts = dict(zip([int(u) for u in unique], [int(c) for c in counts]))
         return {
             "num_patients": num_patients,
             "label_distribution": label_counts,
@@ -1274,6 +1278,8 @@ class HospitalUnit:
 if __name__ == "__main__":
     logger.info("Loading all MIMIC tables...")
 
+    ##################### DEMO MIMIC-III ###########################
+
     data_manager = DataManager(
         data_path=DATASET_PATH_DEMO,
         diagnoses_map_path=DATASET_PATH_DEMO
@@ -1287,6 +1293,7 @@ if __name__ == "__main__":
         var_map_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/itemid_to_variable_map.csv",
         var_ranges_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/variable_ranges.csv",
         variable_column="LEVEL2",
+        #stats_path=Path("/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv"), # how to make this conditional? if stats_path is none def process_timeseries will also return get_stats's return value for full mimic-iii dataset
     )
     
     #################### FULL MIMIC-III ###########################
@@ -1305,8 +1312,9 @@ if __name__ == "__main__":
     #     var_ranges_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/variable_ranges.csv",
     #     variable_column="LEVEL2",
     # )
+
     ################################################
-    # Build Patient Database
+    # Build Patient Database and Get Task
     ################################################
 
     tables = data_manager.load_all_tables(data_manager.data_path)
@@ -1314,11 +1322,22 @@ if __name__ == "__main__":
     full_db, filtered_db = Patient.build_patient_database(
         tables, filter_single_stay=True
     )
-    logger.info(f"Total patients: {len(full_db)}")
+    for pid in filtered_db.keys():
+        assert len(filtered_db[pid].icu_stays) == 1, (
+            f"Patient {pid} has {len(filtered_db[pid].icu_stays)} ICU stays, expected 1."
+        )
+    #logger.info(f"Total patients: {len(full_db)}")
     logger.info(f"Filtered patients (single stay, no transfers): {len(filtered_db)}")
 
+    task = MortalityTask()
+    
     ################################################
     # Timeseries Data
+    ################################################
+
+
+    ################################################
+    # Timeseries Data   
     ################################################
 
     all_timeseries = []
@@ -1369,6 +1388,8 @@ if __name__ == "__main__":
 
     for events in events_objs:
         timeseries = events.timeseries
+        
+
         binned_timeseries_df = Events.to_binned_timeseries(
             timeseries,
             stats_csv="/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv",
@@ -1403,19 +1424,33 @@ if __name__ == "__main__":
     for t in padded:
         padded_seq.append(t)
 
+    ##################################################
+    # NLP Data
+    ##################################################
+
 
     ####################################################
     # Create HospitalUnit and Arrange Data Heterogeneity
     ####################################################
-
-    task = MortalityTask() # pass config args
-    hospital = HospitalUnit(list(filtered_db.values()), padded_seq)
+    
+    # hospital = HospitalUnit.from_events_objs(
+    #     list(filtered_db.values()),
+    #     events_objs,
+    #     stats_csv="/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv",
+    #     n_timesteps=24,
+    #     task=task
+    # )
+    hospital = HospitalUnit(
+        patients=list(filtered_db.values()),
+        padded_seq=padded_seq
+    )
     dataset = hospital.build_dataset(task=task)
-    train, test, dev = hospital.split_dataset(dataset, split_ratio=0.8, seed=42)  
-    client_datasets, dev_set, test_set = hospital.partition_dataset(train, split_method=1, num_clients=2, alpha=0.5, is_shuffle=True)
+    train, test, dev = hospital.split_dataset(dataset, split_ratio=0.8, seed=42)
+    client_datasets, dev_set, test_set = hospital.partition_dataset(
+        train, split_method=1, num_clients=2, alpha=0.5, is_shuffle=True
+    )
     hospital.show_distribution(client_datasets, num_clients=2, split_method="iid")
-    breakpoint()
-
+   
     ################################################
     # Test cases
     ################################################
@@ -1430,7 +1465,7 @@ if __name__ == "__main__":
     expected_count_patient = 33798
     expected_count_icustay = 42276
     expected_count_events = 250_000_000
-
+    
     assert num_patients == expected_count_patient, (
         f"Expected {expected_count_patient} patients, found {num_patients}"
     )
@@ -1449,12 +1484,3 @@ if __name__ == "__main__":
 
    
     breakpoint()
-    # for col in columns_of_interest:
-    #     if col not in timeseries.columns:
-    #         timeseries[col] = np.nan
-
-    # if not timeseries.empty:
-    #      all_timeseries.append(timeseries)
-
-    # stats_df = Patient.get_stats(all_timeseries, columns_of_interest=columns_of_interest)
-    # stats_df.to_csv(DATASET_PATH / "features_stats_3.csv", index=False)

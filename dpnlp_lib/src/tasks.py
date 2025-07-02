@@ -20,12 +20,17 @@ class BaseTask(ABC):
 
 class MortalityTask(BaseTask):
     def get_label(self, patient):
-        print(patient)
-        if len(patient.icustays_df) > 1:
-            pass
-        #assert len(patient.icustays_df) == 1
-        label = patient.icustays_df["MORTALITY_INHOSPITAL"].astype(int)
-        return label
+        if hasattr(patient, "icustays_df") and len(patient.icustays_df) == 1:
+            label = int(patient.icustays_df.iloc[0]["MORTALITY_INHOSPITAL"])
+            return label
+
+
+        timeseries = getattr(patient.events, "timeseries", None)
+        if timeseries is not None and "HADM_ID" in timeseries.columns:
+            hadm_id = timeseries["HADM_ID"].unique()[0]
+            icustays_df = patient.icustays_df[patient.icustays_df["HADM_ID"] == hadm_id]
+            label = int(icustays_df["MORTALITY_INHOSPITAL"].astype(int).values[0])
+            return label
 
     def compute_metrics(self, y_true, y_pred):
         return {
