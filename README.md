@@ -15,6 +15,11 @@ python main.py -m task=mortality,phenotyping data_split=iid,non-iid,dirichlet_mo
 ```
 This would launch 12 jobs using different degrees of data heterogeneity using specified algorithms.
 
+Debug Config Resolution:
+```bash
+python main.py task=mortality algorithm=dp-sgd --cfg job --resolve
+```
+
 ## Folder Structure For Hydra-Config Files
 ```bash
 thesis/
