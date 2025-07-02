@@ -1,0 +1,11 @@
+hydra:
+  run:
+    dir: outputs/${task}_${data_split}_${algorithm}/${now:%Y-%m-%d_%H-%M-%S}
+
+  sweep:
+    dir: multirun/${task}_${data_split}_${algorithm}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}
+
+  job:
+    name: ${task}_${data_split}_${algorithm}
+
