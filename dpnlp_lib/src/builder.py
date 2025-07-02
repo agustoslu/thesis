@@ -103,9 +103,17 @@ class PandasMixin:
     def csv_to_df_batch(
         self, path: Path, header=0, index_col=None, case: str = "upper"
     ) -> pd.DataFrame:
-        chunks = pd.read_csv(path, header=header, index_col=index_col, chunksize=10**6, compression="gzip", low_memory=True)
+        chunks = pd.read_csv(
+            path,
+            header=header,
+            index_col=index_col,
+            chunksize=10**6,
+            compression="gzip",
+            low_memory=True,
+        )
         df = pd.concat(chunks, ignore_index=True, sort=False)
         return self.standardize_columns(df, case=case)
+
 
 @dataclass
 class DataManager(PandasMixin):
@@ -120,14 +128,14 @@ class DataManager(PandasMixin):
     var_map_path: Path
     var_ranges_path: Path
     variable_column: str = "LEVEL2"
-    #stats_path: Path 
+    stats_path: Optional[Path] = None
 
     # lazy loading
     _phenotype_definitions: Optional[Dict] = field(default=None, init=False)
     _diagnoses: Optional[pd.DataFrame] = field(default=None, init=False)
     _var_map: Optional[pd.DataFrame] = field(default=None, init=False)
     _var_ranges: Optional[pd.DataFrame] = field(default=None, init=False)
-    #_stats: Optional[pd.DataFrame] = field(default=None, init=False)
+    _stats: Optional[pd.DataFrame] = field(default=None, init=False)
 
     def merge_on_subject(
         self, table1: pd.DataFrame, table2: pd.DataFrame
@@ -161,13 +169,13 @@ class DataManager(PandasMixin):
     def load_all_tables(self, data_path: Path) -> Dict[str, pd.DataFrame]:
         """Load all .csv files from MIMIC directory."""
         dataframes = {}
-        for file in data_path.glob("*.csv"): # demo
-        #for file in data_path.glob("*.csv.gz"):
+        for file in data_path.glob("*.csv"):  # demo
+            # for file in data_path.glob("*.csv.gz"):
             logger.info(f"Loading {file.name}...")
-            #df = self.csv_to_df_batch(file)
-            df= self.csv_to_df(file)  # demo 
+            # df = self.csv_to_df_batch(file)
+            df = self.csv_to_df(file)  # demo
             dataframes[file.stem.lower()] = df
-        
+
         # perform some early filtering and add them as additional tables
         if "icustays" in dataframes and "admissions" in dataframes:
             dataframes["stays_admits"] = self.merge_on_subject_admission(
@@ -297,9 +305,11 @@ class DataManager(PandasMixin):
             left_on=["SUBJECT_ID", "HADM_ID"],
             right_on=["SUBJECT_ID", "HADM_ID"],
         )
-    
+
     @cached_property
-    def get_stats(self, all_timeseries: list, columns_of_interest: list) -> pd.DataFrame:
+    def get_stats(
+        self, all_timeseries: list, columns_of_interest: list
+    ) -> pd.DataFrame:
         if not all_timeseries:
             return pd.DataFrame()
 
@@ -463,8 +473,7 @@ class ICUStay:
 
         to_keep = to_keep.loc[
             (to_keep.ICUSTAY_ID >= min_nb_stays) & (to_keep.ICUSTAY_ID <= max_nb_stays)
-        ][["HADM_ID"]] 
-        
+        ][["HADM_ID"]]
 
         filtered_stays_df = icustays_df.merge(to_keep, how="inner", on="HADM_ID")
         valid_hadm_ids = set(filtered_stays_df.HADM_ID)
@@ -685,9 +694,9 @@ class Events(PandasMixin):
     @staticmethod
     def to_binned_timeseries(
         timeseries: pd.DataFrame,
-        stats_csv: Path | str,
+        stats_csv: Path | str | pd.DataFrame,
         n_timesteps=24,
-        task="mortality",
+        task=BaseTask,
     ) -> pd.DataFrame:
         """adapted from https://github.com/layer6ai-labs/DuETT/blob/master/physionet.py#L83
         they choose n_timesteps=32 in the paper
@@ -698,9 +707,13 @@ class Events(PandasMixin):
                 "Timeseries DataFrame is empty, returning empty DataFrame for patient."
             )
             return pd.DataFrame()
-        if task == "mortality":
+
+        if task is not None:
+            task = task.get_info["task_type"]
+
+        if task == "binary":
             timeseries = timeseries[timeseries["HOURS"] <= 48]
-        elif task == "phenotypes":
+        elif task == "multiclass":
             pass
 
         feature_stats = pd.read_csv(stats_csv, index_col=0)
@@ -761,7 +774,6 @@ class Events(PandasMixin):
         )
         binned_timeseries = binned_timeseries[cols]
         return binned_timeseries  # BIN, lab events, demographics, BIN_END_HOURS
-
 
     def validate_events(
         self, events_df: pd.DataFrame, icustays_df: pd.DataFrame
@@ -876,6 +888,111 @@ class Events(PandasMixin):
     @staticmethod
     def get_cleaned_events_static(events_obj):
         return events_obj.get_cleaned_events()
+
+    @staticmethod
+    def process_events_for_patients(
+        filtered_db: pd.DataFrame,
+        data_manager: DataManager,
+        stats_csv: Path,
+        task: BaseTask,
+        n_timesteps=24,
+        max_workers=8,
+    ):
+        if stats_csv is not None:
+            stats_csv = Path(stats_csv)
+            if not stats_csv.exists():
+                raise FileNotFoundError(f"Stats CSV file {stats_csv} does not exist.")
+
+        # quick fix for now to add missing variables to timeseries if the patient has them missing
+        columns_of_interest = [
+            "Capillary refill rate",
+            "Diastolic blood pressure",
+            "Fraction inspired oxygen",
+            "Glascow coma scale eye opening",
+            "Glascow coma scale motor response",
+            "Glascow coma scale total",
+            "Glascow coma scale verbal response",
+            "Glucose",
+            "Heart Rate",
+            "Mean blood pressure",
+            "Oxygen saturation",
+            "Respiratory rate",
+            "Systolic blood pressure",
+            "Temperature",
+            "pH",
+            "AGE",
+            "GENDER",
+            "ETHNICITY",
+            "ICU_TYPE",
+        ]
+        events_objs = []
+        for idx, (pid, patient) in enumerate(filtered_db.items(), 1):
+            logger.info(f"Loading events for {pid} ({idx}/{len(filtered_db)})...")
+            events = Events(data_manager=data_manager, patient=patient)
+            patient.add_events(events)
+            events_objs.append(events)
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            cleaned_results = list(
+                executor.map(Events.get_cleaned_events_static, events_objs)
+            )
+
+        all_timeseries = []
+        binned_timeseries = []
+        binned_tensors = []
+        concat_tensors = []
+        lengths = []
+        padded_seq = []
+
+        for events in events_objs:
+            timeseries = events.timeseries
+            if not timeseries.empty:
+                all_timeseries.append(timeseries)
+
+            binned_timeseries_df = Events.to_binned_timeseries(
+                timeseries,
+                stats_csv=stats_csv
+                if stats_csv
+                else data_manager.get_stats(all_timeseries, columns_of_interest),
+                n_timesteps=n_timesteps,
+                task=task,
+            )
+            input_cols = [col for col in binned_timeseries_df.columns]
+            mask = ~binned_timeseries_df[input_cols].isna()
+            mask_tensor = torch.tensor(mask.values, dtype=torch.float32)
+            mask_impute = binned_timeseries_df[input_cols] == 0.0
+            mask_impute = torch.tensor(mask_impute.values, dtype=torch.float32)
+            input_tensor = torch.tensor(
+                binned_timeseries_df[input_cols].fillna(0).values, dtype=torch.float32
+            )
+            binned_timeseries.append(binned_timeseries_df)
+            binned_tensors.append(
+                {
+                    "input_tensor": input_tensor,
+                    "mask_tensor": mask_tensor,
+                    "mask_impute": mask_impute,
+                }
+            )
+            concat_tensor = torch.cat(
+                [input_tensor, mask_tensor.float(), mask_impute.float()], dim=-1
+            )
+            concat_tensors.append(concat_tensor)
+            lengths.append(concat_tensor.shape[0])
+
+        valid_concat_tensors = [
+            t for t in concat_tensors if t is not None and t.shape[0] > 0
+        ]
+        padded = pad_sequence(valid_concat_tensors, batch_first=True, padding_value=0.0)
+        padded_seq = [t for t in padded]
+
+        return (
+            events_objs,
+            binned_timeseries,
+            binned_tensors,
+            concat_tensors,
+            lengths,
+            padded_seq,
+        )
 
     @property  # since they are cached they will not call get_cleaned_events again
     def cleaned_events(self) -> pd.DataFrame:
@@ -1117,13 +1234,11 @@ class Patient(PandasMixin):
         batch_size: int = 1000,
         max_workers: int = 8,
     ) -> Tuple[Dict[int, "Patient"], Dict[int, "Patient"]]:
-
         merged_stays = tables.get("stays_admits_patients")
         if merged_stays is None:
             raise ValueError("stays_admits_patients table is missing.")
 
         subject_ids = merged_stays["SUBJECT_ID"].unique()
-        all_patients = {}
         all_filtered_patients = {}
 
         for batch_subject_ids in cls.batch_generator(subject_ids, batch_size):
@@ -1133,19 +1248,23 @@ class Patient(PandasMixin):
                 if "SUBJECT_ID" in df.columns
             }
             patients = defaultdict(lambda: Patient(None))
-            
+
             for table_name, df in batch_tables.items():
                 for subject_id, sub_df in df.groupby("SUBJECT_ID"):
                     if patients[subject_id].subject_id is None:
                         patients[subject_id].subject_id = subject_id
                     patients[subject_id].add_table(table_name, sub_df)
-            
-            for _, row in merged_stays[merged_stays["SUBJECT_ID"].isin(batch_subject_ids)].iterrows():
+
+            for _, row in merged_stays[
+                merged_stays["SUBJECT_ID"].isin(batch_subject_ids)
+            ].iterrows():
                 subject_id = row["SUBJECT_ID"]
                 if subject_id in patients:
                     patients[subject_id].add_icustay(row.to_dict(), merged_stays)
-            
-            logger.info(f"Filtering patients for batch {batch_subject_ids[0]}-{batch_subject_ids[-1]}...")
+
+            logger.info(
+                f"Filtering patients for batch {batch_subject_ids[0]}-{batch_subject_ids[-1]}..."
+            )
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 results = list(executor.map(cls.process_patient, patients.items()))
             filtered_patients = {
@@ -1156,13 +1275,12 @@ class Patient(PandasMixin):
             }
             logger.info(f"Batch filtered: {len(filtered_patients)} patients")
             all_filtered_patients.update(filtered_patients)
-            
+
             del patients
             del filtered_patients
-        all_patients = None    
 
         logger.info(f"Total patients after all batches: {len(all_filtered_patients)}")
-        return all_patients, all_filtered_patients
+        return all_filtered_patients
 
     def __repr__(self):
         careunits = (
@@ -1201,7 +1319,7 @@ class HospitalUnit:
     def __init__(self, patients, padded_seq):
         self.patients = patients
         self.padded_seq = padded_seq
-        #self.task = task
+        # self.task = task
 
     def get_features(self):
         return [padded_seq for padded_seq in self.padded_seq]
@@ -1231,11 +1349,11 @@ class HospitalUnit:
             train_set,
             split_method,
             num_clients=num_clients,
-            #alpha=alpha,
+            # alpha=alpha,
             is_shuffle=is_shuffle,
         )
         return client_datasets, dev_set, test_set
-    
+
     @staticmethod
     def get_hospital_unit_info(ds):
         if hasattr(ds, "dataset"):
@@ -1248,7 +1366,9 @@ class HospitalUnit:
         for i in range(num_patients):
             sample = dataset[i]
             if isinstance(sample, (tuple, list)) and len(sample) > 1:
-                labels.append(sample[1].item() if hasattr(sample[1], "item") else sample[1])
+                labels.append(
+                    sample[1].item() if hasattr(sample[1], "item") else sample[1]
+                )
             elif isinstance(sample, dict) and "label" in sample:
                 labels.append(sample["label"])
         label_counts = {}
@@ -1260,7 +1380,7 @@ class HospitalUnit:
             "label_distribution": label_counts,
             "example_labels": labels[:5],
         }
-    
+
     @classmethod
     def show_distribution(cls, client_datasets, num_clients, split_method="iid"):
         logger.info(f"Created {num_clients} hospital units.")
@@ -1282,20 +1402,22 @@ if __name__ == "__main__":
 
     data_manager = DataManager(
         data_path=DATASET_PATH_DEMO,
-        diagnoses_map_path=DATASET_PATH_DEMO
-        / "D_ICD_DIAGNOSES.csv",
-        diagnoses_path=DATASET_PATH_DEMO
-        / "DIAGNOSES_ICD.csv",
+        diagnoses_map_path=DATASET_PATH_DEMO / "D_ICD_DIAGNOSES.csv",
+        diagnoses_path=DATASET_PATH_DEMO / "DIAGNOSES_ICD.csv",
         phenotype_definitions_path=Path("/home/tanalp/thesis/dpnlp")
         / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
         hcup_ccs_2015_path=Path("/home/tanalp/thesis/dpnlp")
         / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
-        var_map_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/itemid_to_variable_map.csv",
-        var_ranges_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/variable_ranges.csv",
+        var_map_path=Path("/home/tanalp/thesis/dpnlp")
+        / "mimic3benchmark/resources/itemid_to_variable_map.csv",
+        var_ranges_path=Path("/home/tanalp/thesis/dpnlp")
+        / "mimic3benchmark/resources/variable_ranges.csv",
         variable_column="LEVEL2",
-        #stats_path=Path("/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv"), # how to make this conditional? if stats_path is none def process_timeseries will also return get_stats's return value for full mimic-iii dataset
+        stats_path=Path(
+            "/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv"
+        ),
     )
-    
+
     #################### FULL MIMIC-III ###########################
 
     # data_manager = DataManager(
@@ -1314,125 +1436,50 @@ if __name__ == "__main__":
     # )
 
     ################################################
-    # Build Patient Database and Get Task
+    # Build Patient Database
     ################################################
 
     tables = data_manager.load_all_tables(data_manager.data_path)
     logger.info("Building patient database...")
-    full_db, filtered_db = Patient.build_patient_database(
-        tables, filter_single_stay=True
-    )
+    filtered_db = Patient.build_patient_database(tables, filter_single_stay=True)
     for pid in filtered_db.keys():
         assert len(filtered_db[pid].icu_stays) == 1, (
             f"Patient {pid} has {len(filtered_db[pid].icu_stays)} ICU stays, expected 1."
         )
-    #logger.info(f"Total patients: {len(full_db)}")
     logger.info(f"Filtered patients (single stay, no transfers): {len(filtered_db)}")
 
-    task = MortalityTask()
-    
     ################################################
     # Timeseries Data
     ################################################
 
-
-    ################################################
-    # Timeseries Data   
-    ################################################
-
-    all_timeseries = []
-    binned_timeseries = []
-    binned_tensors = []
-    concat_tensors = []
-    lengths = []
-    padded_seq = []
-    # quick fix for now to add missing variables to timeseries if the patient has them missing
-    columns_of_interest = [
-        "Capillary refill rate",
-        "Diastolic blood pressure",
-        "Fraction inspired oxygen",
-        "Glascow coma scale eye opening",
-        "Glascow coma scale motor response",
-        "Glascow coma scale total",
-        "Glascow coma scale verbal response",
-        "Glucose",
-        "Heart Rate",
-        "Mean blood pressure",
-        "Oxygen saturation",
-        "Respiratory rate",
-        "Systolic blood pressure",
-        "Temperature",
-        "pH",
-        "AGE",
-        "GENDER",
-        "ETHNICITY",
-        "ICU_TYPE",
-    ]
-    events_objs = []
-    for idx, (pid, patient) in enumerate(filtered_db.items(), 1):
-        logger.info(f"Loading events for {pid} ({idx}/{len(filtered_db)})...")
-        events = Events(
-            data_manager=data_manager,
-            patient=patient,
-        )
-        patient.add_events(events)
-        events_objs.append(events)
-
-    with ProcessPoolExecutor(max_workers=8) as executor:
-        cleaned_results = list(
-            executor.map(Events.get_cleaned_events_static, events_objs)
-        )
-
-
-# factor out this inside HospitalUnit class - also do the padding with collate
-
-    for events in events_objs:
-        timeseries = events.timeseries
-        
-
-        binned_timeseries_df = Events.to_binned_timeseries(
-            timeseries,
-            stats_csv="/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv",
-            n_timesteps=24,
-            task="mortality",
-        )
-        input_cols = [col for col in binned_timeseries_df.columns]
-        mask = ~binned_timeseries_df[input_cols].isna()
-        mask_tensor = torch.tensor(mask.values, dtype=torch.float32)
-        mask_impute = binned_timeseries_df[input_cols] == 0.0
-        mask_impute = torch.tensor(mask_impute.values, dtype=torch.float32)
-        input_tensor = torch.tensor(
-            binned_timeseries_df[input_cols].fillna(0).values, dtype=torch.float32
-        )
-        binned_timeseries.append(binned_timeseries_df)
-        binned_tensors.append(
-            {
-                "input_tensor": input_tensor,
-                "mask_tensor": mask_tensor,
-                "mask_impute": mask_impute,
-            }
-        )
-        concat_tensor = torch.cat(
-        [input_tensor, mask_tensor.float(), mask_impute.float()], dim=-1
-        )
-        concat_tensors.append(concat_tensor)
-        lengths.append(concat_tensor.shape[0])
-    
-        
-    valid_concat_tensors = [t for t in concat_tensors if t is not None and t.shape[0] > 0]
-    padded = pad_sequence(valid_concat_tensors, batch_first=True, padding_value=0.0)
-    for t in padded:
-        padded_seq.append(t)
+    task = MortalityTask()
+    (
+        events_objs,
+        binned_timeseries,
+        binned_tensors,
+        concat_tensors,
+        lengths,
+        padded_seq,
+    ) = Events.process_events_for_patients(
+        filtered_db,
+        data_manager,
+        stats_csv=data_manager.stats_path
+        if data_manager.stats_path
+        else None,  # otherwise it will compute stats from all timeseries inside process_events_for_patients by calling data_manager.get_stats()
+        n_timesteps=24,
+        task=task,
+        max_workers=8,
+    )
+    logger.info(f"Processed {len(events_objs)} events objects.")
 
     ##################################################
     # NLP Data
     ##################################################
 
-
     ####################################################
     # Create HospitalUnit and Arrange Data Heterogeneity
     ####################################################
-    
+
     # hospital = HospitalUnit.from_events_objs(
     #     list(filtered_db.values()),
     #     events_objs,
@@ -1440,17 +1487,15 @@ if __name__ == "__main__":
     #     n_timesteps=24,
     #     task=task
     # )
-    hospital = HospitalUnit(
-        patients=list(filtered_db.values()),
-        padded_seq=padded_seq
-    )
+    hospital = HospitalUnit(patients=list(filtered_db.values()), padded_seq=padded_seq)
     dataset = hospital.build_dataset(task=task)
     train, test, dev = hospital.split_dataset(dataset, split_ratio=0.8, seed=42)
     client_datasets, dev_set, test_set = hospital.partition_dataset(
         train, split_method=1, num_clients=2, alpha=0.5, is_shuffle=True
     )
+    breakpoint()
     hospital.show_distribution(client_datasets, num_clients=2, split_method="iid")
-   
+
     ################################################
     # Test cases
     ################################################
@@ -1465,7 +1510,7 @@ if __name__ == "__main__":
     expected_count_patient = 33798
     expected_count_icustay = 42276
     expected_count_events = 250_000_000
-    
+
     assert num_patients == expected_count_patient, (
         f"Expected {expected_count_patient} patients, found {num_patients}"
     )
@@ -1481,6 +1526,4 @@ if __name__ == "__main__":
     logger.info(f"Number of events: {num_events}")
     logger.info("All data checks passed successfully!")
 
-
-   
     breakpoint()

@@ -24,7 +24,6 @@ class MortalityTask(BaseTask):
             label = int(patient.icustays_df.iloc[0]["MORTALITY_INHOSPITAL"])
             return label
 
-
         timeseries = getattr(patient.events, "timeseries", None)
         if timeseries is not None and "HADM_ID" in timeseries.columns:
             hadm_id = timeseries["HADM_ID"].unique()[0]
@@ -46,34 +45,35 @@ class MortalityTask(BaseTask):
 
 class PhenotypeTask(BaseTask):
     PHENOTYPE_LIST = sorted(
-            [
-                "Acute and unspecified renal failure",
-                "Acute cerebrovascular disease",
-                "Acute myocardial infarction",
-                "Cardiac dysrhythmias",
-                "Chronic kidney disease",
-                "Chronic obstructive pulmonary disease",
-                "Complications of surgical/medical care",
-                "Conduction disorders",
-                "Congestive heart failure; nonhypertensive",
-                "Coronary atherosclerosis and related",
-                "Diabetes mellitus with complications",
-                "Diabetes mellitus without complication",
-                "Disorders of lipid metabolism",
-                "Essential hypertension",
-                "Fluid and electrolyte disorders",
-                "Gastrointestinal hemorrhage",
-                "Hypertension with complications",
-                "Other liver diseases",
-                "Other lower respiratory disease",
-                "Other upper respiratory disease",
-                "Pleurisy; pneumothorax; pulmonary collapse",
-                "Pneumonia",
-                "Respiratory failure; insufficiency; arrest",
-                "Septicemia (except in labor)",
-                "Shock",
-            ]
-        )
+        [
+            "Acute and unspecified renal failure",
+            "Acute cerebrovascular disease",
+            "Acute myocardial infarction",
+            "Cardiac dysrhythmias",
+            "Chronic kidney disease",
+            "Chronic obstructive pulmonary disease",
+            "Complications of surgical/medical care",
+            "Conduction disorders",
+            "Congestive heart failure; nonhypertensive",
+            "Coronary atherosclerosis and related",
+            "Diabetes mellitus with complications",
+            "Diabetes mellitus without complication",
+            "Disorders of lipid metabolism",
+            "Essential hypertension",
+            "Fluid and electrolyte disorders",
+            "Gastrointestinal hemorrhage",
+            "Hypertension with complications",
+            "Other liver diseases",
+            "Other lower respiratory disease",
+            "Other upper respiratory disease",
+            "Pleurisy; pneumothorax; pulmonary collapse",
+            "Pneumonia",
+            "Respiratory failure; insufficiency; arrest",
+            "Septicemia (except in labor)",
+            "Shock",
+        ]
+    )
+
     def get_label(self, patient):
         phenos = patient.events.phenotypes.copy()
         assert len(phenos) == 1
@@ -101,4 +101,4 @@ class PhenotypeTask(BaseTask):
 
     @property
     def get_info(self):
-        return {"label_column": "PHENOTYPE", "task_type": "multilabel - 25 classes"}
+        return {"label_column": "PHENOTYPE", "task_type": "multiclass"}
