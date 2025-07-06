@@ -1,7 +1,6 @@
 import logging
 import torch
 import torch.nn as nn
-from flwr.common import NDArray
 from typing import Any, List, Tuple, Dict
 from torch.nn.utils.rnn import pad_sequence
 from collections import OrderedDict
@@ -32,13 +31,13 @@ def collate_fn(
     return padded_features, lengths, labels
 
 
-def get_weights(model: nn.Module) -> list[NDArray]:
-    # from: https://github.com/matturche/flower_opacus_example/blob/main/flower_helpers.py#L133
+def get_parameters(model: nn.Module) -> list[np.ndarray]:
+    # from: https://github.com/adap/flower/blob/main/framework/docs/source/tutorial-series-build-a-strategy-from-scratch-pytorch.ipynb
     return [value.cpu().numpy() for _, value in model.state_dict().items()]
 
 
-def set_weights(model: nn.Module, weights: list[NDArray]) -> None:
-    # from: https://github.com/matturche/flower_opacus_example/blob/main/flower_helpers.py#L138
+def set_parameters(model: nn.Module, weights: list[np.ndarray]) -> None:
+    # from: https://github.com/adap/flower/blob/main/framework/docs/source/tutorial-series-build-a-strategy-from-scratch-pytorch.ipynb
     params_dict = zip(model.state_dict().keys(), weights)
     state_dict = OrderedDict({k: torch.Tensor(v) for k, v in params_dict})
     model.load_state_dict(state_dict, strict=True)
@@ -46,9 +45,9 @@ def set_weights(model: nn.Module, weights: list[NDArray]) -> None:
 
 def get_target_delta(data_size: int) -> float:
     # from: https://github.com/matturche/flower_opacus_example/blob/main/flower_helpers.py#L143
-    """Generate target delta δ given the size of a dataset. Delta should be
-    less than the inverse of the datasize. It is used as a fallback for epsilon ε, where the privacy is
-    not strictly preserved."""
+    """Generate target delta (δ) based on the dataset size. In (ε, δ)-differential privacy,
+    delta is a small number that reflects the (very low) chance that privacy guarantees might not hold.
+    A common rule of thumb is to make it smaller than the inverse of the dataset size."""
     denominator = 1
     while data_size // denominator >= 1:
         denominator *= 10

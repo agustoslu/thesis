@@ -6,18 +6,22 @@ import pandas as pd
 import numpy as np
 from collections import defaultdict
 import torch
-from torch.utils.data import Dataset, random_split, DataLoader
-from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
+from torch.utils.data import Dataset, random_split
+from torch.nn.utils.rnn import pad_sequence
 from pathlib import Path
 import logging
-from argparse import ArgumentParser
 from functools import cached_property
 import re
 import yaml
+import os
 from concurrent.futures import ProcessPoolExecutor
 from download import DATASET_PATH_DEMO, DATASET_PATH, home_dir
 from tasks import BaseTask, MortalityTask, PhenotypeTask
 from partitioner import enable_info_logs, partition_data
+import pyarrow.parquet as pq
+import pyarrow as pa
+import glob
+import duckdb
 
 enable_info_logs()
 logger = logging.getLogger(__name__)
@@ -114,6 +118,35 @@ class PandasMixin:
         df = pd.concat(chunks, ignore_index=True, sort=False)
         return self.standardize_columns(df, case=case)
 
+    def to_parquet(
+        self,
+        data: dict,
+        base_path: Path,
+        subject_id: str | int,
+        compression: str = "snappy",
+        skip_empty: bool = True,
+        **kwargs,
+    ) -> None:
+        patient_dir = Path(base_path) / str(subject_id)
+        patient_dir.mkdir(parents=True, exist_ok=True)
+        for table_name, df in data.items():
+            if skip_empty and (df is None or df.empty):
+                continue
+            table_path = patient_dir / f"{table_name}.parquet"
+            table = pa.Table.from_pandas(df)
+            pq.write_table(table, table_path, compression=compression, **kwargs)
+            logger.info(f"Saved {table_name} for patient {subject_id} to {table_path}.")
+
+    def from_parquet_dir(
+        self, path: Path, columns: Optional[List[str]] = None
+    ) -> pd.DataFrame:
+        df = duckdb.query(f"SELECT * FROM '{path}/*.parquet'").to_df()
+        return (
+            self.standardize_columns(df, case="upper")
+            if df is not None
+            else pd.DataFrame()
+        )
+
 
 @dataclass
 class DataManager(PandasMixin):
@@ -129,6 +162,7 @@ class DataManager(PandasMixin):
     var_ranges_path: Path
     variable_column: str = "LEVEL2"
     stats_path: Optional[Path] = None
+    save_path: Optional[Path] = None
 
     # lazy loading
     _phenotype_definitions: Optional[Dict] = field(default=None, init=False)
@@ -889,20 +923,16 @@ class Events(PandasMixin):
     def get_cleaned_events_static(events_obj):
         return events_obj.get_cleaned_events()
 
-    @staticmethod
+    @classmethod
     def process_events_for_patients(
+        cls,
         filtered_db: pd.DataFrame,
-        data_manager: DataManager,
         stats_csv: Path,
+        parquet_dir: Path | str,
         task: BaseTask,
         n_timesteps=24,
         max_workers=8,
     ):
-        if stats_csv is not None:
-            stats_csv = Path(stats_csv)
-            if not stats_csv.exists():
-                raise FileNotFoundError(f"Stats CSV file {stats_csv} does not exist.")
-
         # quick fix for now to add missing variables to timeseries if the patient has them missing
         columns_of_interest = [
             "Capillary refill rate",
@@ -932,28 +962,25 @@ class Events(PandasMixin):
             patient.add_events(events)
             events_objs.append(events)
 
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            cleaned_results = list(
-                executor.map(Events.get_cleaned_events_static, events_objs)
-            )
-
         all_timeseries = []
+        if stats_csv is None:
+            for events in events_objs:
+                timeseries = events.timeseries
+                if not timeseries.empty:
+                    all_timeseries.append(timeseries)
+            stats_csv = data_manager.get_stats(all_timeseries, columns_of_interest)
+        else:
+            stats_csv = Path(stats_csv)
+
+        del all_timeseries
+
         binned_timeseries = []
         binned_tensors = []
-        concat_tensors = []
-        lengths = []
-        padded_seq = []
 
         for events in events_objs:
-            timeseries = events.timeseries
-            if not timeseries.empty:
-                all_timeseries.append(timeseries)
-
             binned_timeseries_df = Events.to_binned_timeseries(
-                timeseries,
-                stats_csv=stats_csv
-                if stats_csv
-                else data_manager.get_stats(all_timeseries, columns_of_interest),
+                events.timeseries,
+                stats_csv=stats_csv,
                 n_timesteps=n_timesteps,
                 task=task,
             )
@@ -973,26 +1000,13 @@ class Events(PandasMixin):
                     "mask_impute": mask_impute,
                 }
             )
-            concat_tensor = torch.cat(
-                [input_tensor, mask_tensor.float(), mask_impute.float()], dim=-1
+            data_manager.to_parquet(
+                data={"binned_timeseries": binned_timeseries_df},
+                base_path=data_manager.save_path,
+                subject_id=patient.icustays_df.iloc[0].SUBJECT_ID,
+                compression="snappy",
             )
-            concat_tensors.append(concat_tensor)
-            lengths.append(concat_tensor.shape[0])
-
-        valid_concat_tensors = [
-            t for t in concat_tensors if t is not None and t.shape[0] > 0
-        ]
-        padded = pad_sequence(valid_concat_tensors, batch_first=True, padding_value=0.0)
-        padded_seq = [t for t in padded]
-
-        return (
-            events_objs,
-            binned_timeseries,
-            binned_tensors,
-            concat_tensors,
-            lengths,
-            padded_seq,
-        )
+        logger.info(f"Processed {len(events_objs)} events objects.")
 
     @property  # since they are cached they will not call get_cleaned_events again
     def cleaned_events(self) -> pd.DataFrame:
@@ -1416,6 +1430,7 @@ if __name__ == "__main__":
         stats_path=Path(
             "/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv"
         ),
+        save_path=Path("/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/parquet"),
     )
 
     #################### FULL MIMIC-III ###########################
@@ -1453,25 +1468,15 @@ if __name__ == "__main__":
     ################################################
 
     task = MortalityTask()
-    (
-        events_objs,
-        binned_timeseries,
-        binned_tensors,
-        concat_tensors,
-        lengths,
-        padded_seq,
-    ) = Events.process_events_for_patients(
-        filtered_db,
-        data_manager,
-        stats_csv=data_manager.stats_path
-        if data_manager.stats_path
-        else None,  # otherwise it will compute stats from all timeseries inside process_events_for_patients by calling data_manager.get_stats()
+    Events.process_events_for_patients(
+        filtered_db=filtered_db,
+        stats_csv=data_manager.stats_path,
+        parquet_dir=data_manager.save_path,
         n_timesteps=24,
         task=task,
         max_workers=8,
     )
-    logger.info(f"Processed {len(events_objs)} events objects.")
-
+    breakpoint()
     ##################################################
     # NLP Data
     ##################################################
