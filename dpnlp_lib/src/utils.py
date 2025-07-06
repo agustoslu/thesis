@@ -36,9 +36,9 @@ def get_parameters(model: nn.Module) -> list[np.ndarray]:
     return [value.cpu().numpy() for _, value in model.state_dict().items()]
 
 
-def set_parameters(model: nn.Module, weights: list[np.ndarray]) -> None:
+def set_parameters(model: nn.Module, parameters: list[np.ndarray]) -> None:
     # from: https://github.com/adap/flower/blob/main/framework/docs/source/tutorial-series-build-a-strategy-from-scratch-pytorch.ipynb
-    params_dict = zip(model.state_dict().keys(), weights)
+    params_dict = zip(model.state_dict().keys(), parameters)
     state_dict = OrderedDict({k: torch.Tensor(v) for k, v in params_dict})
     model.load_state_dict(state_dict, strict=True)
 
