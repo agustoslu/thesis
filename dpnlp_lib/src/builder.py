@@ -13,15 +13,18 @@ import logging
 from functools import cached_property
 import re
 import yaml
-import os
 from concurrent.futures import ProcessPoolExecutor
-from download import DATASET_PATH_DEMO, DATASET_PATH, home_dir
-from tasks import BaseTask, MortalityTask, PhenotypeTask
-from partitioner import enable_info_logs, partition_data
+from dpnlp_lib.src.download import DATASET_PATH_DEMO, DATASET_PATH, home_dir
+from dpnlp_lib.src.tasks import BaseTask
+from dpnlp_lib.src.partitioner import enable_info_logs, partition_data
 import pyarrow.parquet as pq
 import pyarrow as pa
 import glob
 import duckdb
+import hydra
+from hydra.utils import instantiate
+from omegaconf import DictConfig
+
 
 enable_info_logs()
 logger = logging.getLogger(__name__)
@@ -1409,7 +1412,7 @@ class HospitalUnit:
             )
 
 
-if __name__ == "__main__":
+def run_builder(cfg: DictConfig):
     logger.info("Loading all MIMIC tables...")
 
     ##################### DEMO MIMIC-III ###########################
@@ -1467,7 +1470,7 @@ if __name__ == "__main__":
     # Timeseries Data
     ################################################
 
-    task = MortalityTask()
+    task = instantiate(cfg.task)
     Events.process_events_for_patients(
         filtered_db=filtered_db,
         stats_csv=data_manager.stats_path,
@@ -1532,3 +1535,7 @@ if __name__ == "__main__":
     logger.info("All data checks passed successfully!")
 
     breakpoint()
+
+
+if __name__ == "__main__":
+    run_builder()

@@ -1,0 +1,2 @@
+task: ${task}
+num_supernodes: ${builder.num_hospitals}

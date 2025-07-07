@@ -3,10 +3,9 @@
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
-from torch.nn.utils.rnn import pad_sequence
 from typing import Any, List, Dict, Tuple, Optional
 import logging
-from utils import enable_info_logs
+from utils import enable_info_logs, collate_fn
 
 enable_info_logs()
 logger = logging.getLogger(__name__)
@@ -23,16 +22,6 @@ class DatasetSplit(Dataset):
     def __getitem__(self, item: int) -> Tuple[Any, Any]:
         feature, label = self.dataset[self.client_idxs[item]]
         return feature, label
-
-
-def collate_fn(
-    batch: List[Tuple[Any, Any]],
-) -> Tuple[torch.Tensor, List[int], torch.Tensor]:
-    features, labels = zip(*batch)
-    lengths = [f.shape[0] for f in features]
-    padded_features = pad_sequence(features, batch_first=True, padding_value=0.0)
-    labels = torch.stack(labels, dim=0)
-    return padded_features, lengths, labels
 
 
 def iid_esize_split(
