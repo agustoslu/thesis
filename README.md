@@ -39,7 +39,7 @@ thesis/
 Data maps used when calling DataManager in builder.py can be obtained [here](https://github.com/YerevaNN/mimic3-benchmarks/tree/v1.0.0-alpha/mimic3benchmark/resources).
 
 ## Troubleshooting
-Hydra will shorten error messages for readability but sometimes it causes the root of issue cannot be seen. You can set an environment variable ```bashHYDRA_FULL_ERROR=1``` to see full stack trace.
+Hydra will shorten error messages for readability but sometimes it causes the root of issue cannot be seen. You can set an environment variable ```HYDRA_FULL_ERROR=1``` to see full stack trace.
 
 To debug config resolution:
 
