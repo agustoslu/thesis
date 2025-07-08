@@ -25,6 +25,7 @@ from dpnlp_lib.src.utils import (
     save_metrics_to_run_folder,
     log_gpu_usage,
     append_row_to_csv,
+    logger,
 )
 from dpnlp_lib.src.tasks import BaseTask
 
@@ -88,19 +89,43 @@ class DPSGDFedAvg(Strategy):
         results: List[Tuple[ClientProxy, FitRes]],
         failures: List[Union[Tuple[ClientProxy, FitRes], BaseException]],
     ) -> Tuple[Optional[Parameters], Dict[str, Scalar]]:
-        
+        if not results:
+            return None, {}
+
+        epsilons = []
+        accepted_results = []
+        for client, fit_res in results:
+            epsilon = fit_res.metrics.get("epsilon") if fit_res.metrics else None
+            if epsilon is not None:
+                epsilons.append(epsilon)
+            if fit_res.metrics.get("accept", True):
+                accepted_results.append((client, fit_res))
+
+        if epsilons:
+            self.max_epsilon = max(self.max_epsilon, max(epsilons))
+
         weights_results = [
             (parameters_to_ndarrays(fit_res.parameters), fit_res.num_examples)
-            for _, fit_res in results
+            for _, fit_res in accepted_results
         ]
         parameters_aggregated = ndarrays_to_parameters(aggregate(weights_results))
-        metrics_aggregated = {}
+        metrics_aggregated = {
+            "server_round": server_round,
+            "num_clients": len(accepted_results),
+            "max_epsilon": self.max_epsilon,
+            "client_epsilons": epsilons,
+        }
+        save_metrics_to_run_folder(
+            metrics_aggregated, filename=f"metrics_round_{server_round}.json"
+        )
+        log_gpu_usage(context=f"Server Aggregate Round {server_round}")
+        append_row_to_csv(metrics_aggregated, filename="federated_stats.csv")
+        logger.info(f"Privacy budget ε at round {server_round}: {self.max_epsilon}")
         return parameters_aggregated, metrics_aggregated
-    
-    
+
     def configure_evaluate(
         self, server_round: int, parameters: Parameters, client_manager: ClientManager
-) -> List[Tuple[ClientProxy, EvaluateIns]]:
+    ) -> List[Tuple[ClientProxy, EvaluateIns]]:
         """Configure the next round of evaluation."""
 
         if self.fraction_evaluate == 0.0:
@@ -121,14 +146,12 @@ class DPSGDFedAvg(Strategy):
 
         return [(client, evaluate_ins) for client in clients]
 
-
     def aggregate_evaluate(
         self,
         server_round: int,
         results: List[Tuple[ClientProxy, EvaluateRes]],
         failures: List[Union[Tuple[ClientProxy, EvaluateRes], BaseException]],
     ) -> Tuple[Optional[float], Dict[str, Scalar]]:
-        
         if not results:
             return None, {}
 
@@ -149,7 +172,6 @@ class DPSGDFedAvg(Strategy):
         log_gpu_usage(context=f"Server Aggregate Evaluate Round {server_round}")
         append_row_to_csv(metrics_aggregated, filename="eval_federated_stats.csv")
         return loss_aggregated, metrics_aggregated
-
 
     def num_fit_clients(self, num_available_clients: int) -> Tuple[int, int]:
         num_clients = int(num_available_clients * self.fraction_fit)
