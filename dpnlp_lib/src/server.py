@@ -1,5 +1,6 @@
 import torch
 from typing import Any
+import opacus
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.simulation import run_simulation
 from flwr.common import Context

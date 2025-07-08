@@ -744,7 +744,7 @@ class Events(PandasMixin):
                 "Timeseries DataFrame is empty, returning empty DataFrame for patient."
             )
             return pd.DataFrame()
-
+        
         if task is not None:
             task = task.get_info["task_type"]
 
@@ -929,6 +929,7 @@ class Events(PandasMixin):
     @classmethod
     def process_events_for_patients(
         cls,
+        data_manager: DataManager,
         filtered_db: pd.DataFrame,
         stats_csv: Path,
         parquet_dir: Path | str,
@@ -1470,8 +1471,9 @@ def run_builder(cfg: DictConfig):
     # Timeseries Data
     ################################################
 
-    task = instantiate(cfg.task)
+    task = instantiate(cfg.task)   
     Events.process_events_for_patients(
+        data_manager=data_manager,
         filtered_db=filtered_db,
         stats_csv=data_manager.stats_path,
         parquet_dir=data_manager.save_path,
@@ -1535,7 +1537,3 @@ def run_builder(cfg: DictConfig):
     logger.info("All data checks passed successfully!")
 
     breakpoint()
-
-
-if __name__ == "__main__":
-    run_builder()

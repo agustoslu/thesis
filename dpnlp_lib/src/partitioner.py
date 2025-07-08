@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from typing import Any, List, Dict, Tuple, Optional
 import logging
-from utils import enable_info_logs, collate_fn
+from dpnlp_lib.src.utils import enable_info_logs, collate_fn
 
 enable_info_logs()
 logger = logging.getLogger(__name__)

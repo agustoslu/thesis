@@ -1,3 +1,6 @@
+# Data folder
+/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -153,6 +156,13 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# Swap and temp files
+*.swp
+
+# Output and cache directories
+outputs/ pycache/ *.pyc
+
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

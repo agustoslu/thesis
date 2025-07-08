@@ -1,7 +1,7 @@
 defaults:
   - scripts/builder
   - scripts/server
-  - scripts/client
+ # - scripts/client
   - data_split: iid
   - algorithm: dp_sgd  
   - task: mortality
