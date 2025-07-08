@@ -9,23 +9,14 @@ from dpnlp_lib.src.dp_ftrl import DPFTRLFedAvg
 from client import client
 
 
-def get_strategy(strategy_name: str):
-    if strategy_name == "dp_sgd":
-        return DPSGDFedAvg()
-    elif strategy_name == "dp_ftrl":
-        return DPFTRLFedAvg()
-    else:
-        raise ValueError(f"Unknown: {strategy_name}")
-
-
 def server_fn(
-    context: Context, num_rounds: int, strategy_name: str
+    context: Context, num_rounds: int, strategy_obj
 ) -> ServerAppComponents:
     config = ServerConfig(num_rounds=num_rounds)
-    return ServerAppComponents(config=config, strategy=get_strategy(strategy_name))
+    return ServerAppComponents(config=config, strategy=strategy_obj)
 
 
-def run_flower_server(cfg, **kwargs: Any) -> None:
+def run_flower_server(cfg, strategy_obj, **kwargs: Any) -> None:
     backend_config = cfg.server.backend_config  # without it flower defaults to CPU
     if (
         torch.cuda.is_available()
@@ -35,7 +26,7 @@ def run_flower_server(cfg, **kwargs: Any) -> None:
 
     server = ServerApp(
         server_fn=lambda context: server_fn(
-            context, cfg.server.num_rounds, cfg.server.strategy
+            context, cfg.server.num_rounds, strategy_obj
         )
     )
     run_simulation(

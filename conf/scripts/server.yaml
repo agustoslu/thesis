@@ -4,5 +4,3 @@ backend_config:
   client_resources: 
     num_gpus: 1
 num_rounds: 200
-strategy: dp_sgd
-
