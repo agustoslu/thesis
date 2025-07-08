@@ -6,7 +6,7 @@ from dpnlp_lib.src.builder import run_builder
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig):
     run_builder(cfg)
-    #run_flower_server(**cfg.server)
+    #run_flower_server(cfg)
 
 if __name__ == "__main__":
     main()
