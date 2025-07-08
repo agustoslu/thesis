@@ -15,11 +15,6 @@ python main.py -m task=mortality,phenotyping data_split=iid,non-iid,dirichlet_mo
 ```
 This would launch 12 jobs using different degrees of data heterogeneity using specified algorithms.
 
-Debug Config Resolution:
-```bash
-python main.py task=mortality algorithm=dp-sgd --cfg job --resolve
-```
-
 ## Folder Structure For Hydra-Config Files
 ```bash
 thesis/
@@ -42,3 +37,12 @@ thesis/
 ```
 ## Data Maps
 Data maps used when calling DataManager in builder.py can be obtained [here](https://github.com/YerevaNN/mimic3-benchmarks/tree/v1.0.0-alpha/mimic3benchmark/resources).
+
+## Troubleshooting
+Hydra will shorten error messages for readability but sometimes it causes the root of issue cannot be seen. You can set an environment variable ```bashHYDRA_FULL_ERROR=1``` to see full stack trace.
+
+To debug config resolution:
+
+```bash
+python main.py task=mortality algorithm=dp-sgd --cfg job --resolve
+```
