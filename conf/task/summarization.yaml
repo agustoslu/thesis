@@ -1,1 +1,1 @@
-- task_id: summarization
+_target_: dpnlp_lib.src.tasks.SummaryTask
