@@ -1,3 +1,4 @@
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, TYPE_CHECKING
 
@@ -9,19 +10,18 @@ from sklearn.metrics import (
     average_precision_score,
     roc_auc_score,
 )
-
 if TYPE_CHECKING:
     from dpnlp_lib.src.builder import Patient
 
 
 class BaseTask(ABC):
     @abstractmethod
-    def get_source_text(self, patient: "Patient") -> Any:
+    def get_source_text(self, patient: Patient) -> Any:
         # violation of https://en.wikipedia.org/wiki/Interface_segregation_principle but still for practicality
         ...
 
     @abstractmethod
-    def get_label(self, patient: "Patient") -> Any: ...
+    def get_label(self, patient: Patient) -> Any: ...
 
     @abstractmethod
     def compute_metrics(self, y_true: Any, y_pred: Any) -> Dict[str, float]: ...
@@ -32,11 +32,11 @@ class BaseTask(ABC):
 
 
 class MortalityTask(BaseTask):
-    def get_source_text(self, patient: "Patient") -> None:
+    def get_source_text(self, patient: Patient) -> None:
         """Not applicable for this task."""
         return None
 
-    def get_label(self, patient):
+    def get_label(self, patient: Patient) -> Any:
         if hasattr(patient, "icustays_df") and len(patient.icustays_df) == 1:
             label = int(patient.icustays_df.iloc[0]["MORTALITY_INHOSPITAL"])
             return label
@@ -91,11 +91,11 @@ class PhenotypeTask(BaseTask):
         ]
     )
 
-    def get_source_text(self, patient: "Patient") -> None:
+    def get_source_text(self, patient: Patient) -> None:
         """Not applicable for this task."""
         return None
 
-    def get_label(self, patient: "Patient") -> List[int]:
+    def get_label(self, patient: Patient) -> List[int]:
         phenos = patient.get_table("phenotypes").copy()
         assert len(phenos) == 1
 
@@ -126,13 +126,12 @@ class PhenotypeTask(BaseTask):
 
 
 class SummaryTask(BaseTask):
-    def get_source_text(self, patient: "Patient") -> str:
+    def get_source_text(self, patient: Patient) -> str:
         if hasattr(patient, "icustays_df") and len(patient.icustays_df) == 1:
             source_text = patient.icustays_df.iloc[0]["SOURCE_TEXT"]
             return source_text if source_text is not None else ""
-        return ""
 
-    def get_label(self, patient):
+    def get_label(self, patient: Patient) -> str:
         if hasattr(patient, "icustays_df") and len(patient.icustays_df) == 1:
             label = patient.icustays_df.iloc[0]["DISCHARGE_SUMMARY"]
             return label if label is not None else ""

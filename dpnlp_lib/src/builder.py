@@ -7,7 +7,6 @@ import numpy as np
 from collections import defaultdict
 import torch
 from torch.utils.data import Dataset, random_split
-from torch.nn.utils.rnn import pad_sequence
 from pathlib import Path
 import logging
 from functools import cached_property
@@ -16,18 +15,15 @@ import yaml
 from concurrent.futures import ProcessPoolExecutor
 from dpnlp_lib.src.download import DATASET_PATH_DEMO, DATASET_PATH, home_dir
 from dpnlp_lib.src.tasks import BaseTask
-from dpnlp_lib.src.partitioner import enable_info_logs, partition_data
+from dpnlp_lib.src.partitioner import partition_data
+from dpnlp_lib.src.utils import logger
 import pyarrow.parquet as pq
 import pyarrow as pa
 import glob
 import duckdb
-import hydra
 from hydra.utils import instantiate
 from omegaconf import DictConfig
-
-
-enable_info_logs()
-logger = logging.getLogger(__name__)
+from transformers import PreTrainedTokenizer, AutoTokenizer
 
 ##################################################
 # Building Patient Database and Creating Hospitals
@@ -205,13 +201,28 @@ class DataManager(PandasMixin):
 
     def load_all_tables(self, data_path: Path) -> Dict[str, pd.DataFrame]:
         """Load all .csv files from MIMIC directory."""
+        # dataframes = {}
+        # for file in data_path.glob("*.csv"):  # demo
+        # #for file in data_path.glob("*.csv.gz"):
+        #     logger.info(f"Loading {file.name}...")
+        #     #df = self.csv_to_df_batch(file)
+        #     df = self.csv_to_df(file)  # demo
+        #     dataframes[file.stem.lower()] = df
         dataframes = {}
-        for file in data_path.glob("*.csv"):  # demo
-            # for file in data_path.glob("*.csv.gz"):
-            logger.info(f"Loading {file.name}...")
-            # df = self.csv_to_df_batch(file)
-            df = self.csv_to_df(file)  # demo
-            dataframes[file.stem.lower()] = df
+        logger.info(f"Scanning for .csv.gz files in: {data_path}")
+
+        csv_files = list(data_path.glob("*.csv.gz"))
+        if not csv_files:
+            raise FileNotFoundError(f"No .csv.gz files found in {data_path}")
+
+        for file in csv_files:
+            table_name = file.stem.lower().replace(
+                ".csv", ""
+            )  # "ADMISSIONS.csv.gz" -> "admissions" othwerwise it won't read in and we get an empty filtered_db that also triggers stays_admits_patients not found
+            logger.info(f"Loading table: '{table_name}' from {file.name}")
+            dataframes[table_name] = self.csv_to_df_batch(file)
+
+        logger.info(f"Finished loading. Found tables: {list(dataframes.keys())}")
 
         # perform some early filtering and add them as additional tables
         if "icustays" in dataframes and "admissions" in dataframes:
@@ -407,6 +418,8 @@ class ICUStay:
     MORTALITY_INUNIT: Optional[int] = None
     MORTALITY_INHOSPITAL: Optional[int] = None
     ICU_TYPE: Optional[int] = None
+    DISCHARGE_SUMMARY: Optional[str] = None
+    SOURCE_TEXT: Optional[str] = None
 
     def is_transfer_free(self) -> bool:
         return (
@@ -498,6 +511,36 @@ class ICUStay:
         return icu_type_map.get(
             self.FIRST_CAREUNIT.strip().upper(), icu_type_map["OTHER"]
         )
+
+    def extract_discharge_summary(self, noteevents_df: pd.DataFrame) -> str:
+        """
+        Extracts the discharge summary for this specific ICU stay's admission.
+        """
+        if noteevents_df.empty:
+            return ""
+
+        summary_df = noteevents_df[
+            (noteevents_df["HADM_ID"] == self.HADM_ID)
+            & (noteevents_df["CATEGORY"] == "Discharge summary")
+        ]
+
+        if not summary_df.empty:
+            return " ".join(summary_df["TEXT"].tolist())
+        return ""
+
+    def extract_source_text(self, noteevents_df: pd.DataFrame) -> str:
+        """
+        Extracts and concatenates all other clinical notes for this stay's admission.
+        """
+        if noteevents_df.empty:
+            return ""
+
+        source_notes_df = noteevents_df[
+            (noteevents_df["HADM_ID"] == self.HADM_ID)
+            & (noteevents_df["CATEGORY"] != "Discharge summary")
+        ]
+
+        return " ".join(source_notes_df["TEXT"].tolist())
 
     @classmethod
     def filter_admissions_on_nb_icustays(
@@ -744,7 +787,7 @@ class Events(PandasMixin):
                 "Timeseries DataFrame is empty, returning empty DataFrame for patient."
             )
             return pd.DataFrame()
-        
+
         if task is not None:
             task = task.get_info["task_type"]
 
@@ -923,7 +966,7 @@ class Events(PandasMixin):
         return self._cleaned_events, self._timeseries
 
     @staticmethod
-    def get_cleaned_events_static(events_obj):
+    def get_cleaned_events_static(events_obj: Events) -> pd.DataFrame:
         return events_obj.get_cleaned_events()
 
     @classmethod
@@ -1135,6 +1178,8 @@ class Patient(PandasMixin):
             if patient_data.empty:
                 raise ValueError(f"No data found for subject_id {self.subject_id}")
 
+            noteevents_df = self.get_table("noteevents")
+
             stay = ICUStay(
                 ICUSTAY_ID=int(icu_row["ICUSTAY_ID"]),
                 SUBJECT_ID=int(icu_row["SUBJECT_ID"]),
@@ -1160,6 +1205,8 @@ class Patient(PandasMixin):
             stay.MORTALITY_INUNIT = stay.encode_inunit_mortality()
             stay.MORTALITY_INHOSPITAL = stay.encode_inhospital_mortality()
             stay.ICU_TYPE = stay.encode_icutype()
+            stay.DISCHARGE_SUMMARY = stay.extract_discharge_summary(noteevents_df)
+            stay.SOURCE_TEXT = stay.extract_source_text(noteevents_df)
             self.icu_stays.append(stay)
 
         except Exception as e:
@@ -1256,7 +1303,7 @@ class Patient(PandasMixin):
         if merged_stays is None:
             raise ValueError("stays_admits_patients table is missing.")
 
-        subject_ids = merged_stays["SUBJECT_ID"].unique()
+        subject_ids = np.sort(merged_stays["SUBJECT_ID"].unique())
         all_filtered_patients = {}
 
         for batch_subject_ids in cls.batch_generator(subject_ids, batch_size):
@@ -1291,6 +1338,7 @@ class Patient(PandasMixin):
                 if result is not None
                 for pid, patient in [result]
             }
+
             logger.info(f"Batch filtered: {len(filtered_patients)} patients")
             all_filtered_patients.update(filtered_patients)
 
@@ -1333,8 +1381,57 @@ class MIMIC3Dataset(Dataset):
         return feature, label
 
 
+class MIMIC3SummarizationDataset(Dataset):
+    def __init__(
+        self,
+        source_texts: list[str],
+        target_texts: list[str],
+        tokenizer: PreTrainedTokenizer,
+        max_source_length: int = 1024,
+        max_target_length: int = 256,
+    ):
+        self.tokenizer = tokenizer
+        self.source_texts = source_texts
+        self.target_texts = target_texts
+        self.max_source_length = max_source_length
+        self.max_target_length = max_target_length
+
+    def __len__(self):
+        return len(self.source_texts)
+
+    def __getitem__(self, idx):
+        source_text = self.source_texts[idx]
+        target_text = self.target_texts[idx]
+
+        source_encoding = self.tokenizer(
+            source_text,
+            max_length=self.max_source_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        target_encoding = self.tokenizer(
+            target_text,
+            max_length=self.max_target_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        labels = target_encoding["input_ids"].squeeze()
+        labels[
+            labels == self.tokenizer.pad_token_id
+        ] = -100  # https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html#torch.nn.CrossEntropyLoss so that the padding tokens are ignored in the loss calculation
+
+        return {
+            "input_ids": source_encoding["input_ids"].squeeze(),
+            "attention_mask": source_encoding["attention_mask"].squeeze(),
+            "labels": labels,
+        }
+
+
 class HospitalUnit:
-    def __init__(self, patients, padded_seq):
+    def __init__(self, patients, padded_seq: Optional[List[torch.Tensor]] = None):
         self.patients = patients
         self.padded_seq = padded_seq
         # self.task = task
@@ -1414,14 +1511,37 @@ class HospitalUnit:
 
 
 def run_builder(cfg: DictConfig):
+    logger.info("Hydra config:\n%s", cfg)
     logger.info("Loading all MIMIC tables...")
+    # logger.info("see data path %s for full MIMIC-III dataset", DATASET_PATH)
 
     ##################### DEMO MIMIC-III ###########################
 
+    # data_manager = DataManager(
+    #     data_path=DATASET_PATH_DEMO,
+    #     diagnoses_map_path=DATASET_PATH_DEMO / "D_ICD_DIAGNOSES.csv",
+    #     diagnoses_path=DATASET_PATH_DEMO / "DIAGNOSES_ICD.csv",
+    #     phenotype_definitions_path=Path("/home/tanalp/thesis/dpnlp")
+    #     / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
+    #     hcup_ccs_2015_path=Path("/home/tanalp/thesis/dpnlp")
+    #     / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
+    #     var_map_path=Path("/home/tanalp/thesis/dpnlp")
+    #     / "mimic3benchmark/resources/itemid_to_variable_map.csv",
+    #     var_ranges_path=Path("/home/tanalp/thesis/dpnlp")
+    #     / "mimic3benchmark/resources/variable_ranges.csv",
+    #     variable_column="LEVEL2",
+    #     stats_path=Path(
+    #         "/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv"
+    #     ),
+    #     save_path=Path("/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/parquet"),
+    # )
+
+    #################### FULL MIMIC-III ###########################
+
     data_manager = DataManager(
-        data_path=DATASET_PATH_DEMO,
-        diagnoses_map_path=DATASET_PATH_DEMO / "D_ICD_DIAGNOSES.csv",
-        diagnoses_path=DATASET_PATH_DEMO / "DIAGNOSES_ICD.csv",
+        data_path=DATASET_PATH,
+        diagnoses_map_path=DATASET_PATH / "D_ICD_DIAGNOSES.csv.gz",
+        diagnoses_path=DATASET_PATH / "DIAGNOSES_ICD.csv.gz",
         phenotype_definitions_path=Path("/home/tanalp/thesis/dpnlp")
         / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
         hcup_ccs_2015_path=Path("/home/tanalp/thesis/dpnlp")
@@ -1437,23 +1557,6 @@ def run_builder(cfg: DictConfig):
         save_path=Path("/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/parquet"),
     )
 
-    #################### FULL MIMIC-III ###########################
-
-    # data_manager = DataManager(
-    #     data_path=DATASET_PATH,
-    #     diagnoses_map_path=DATASET_PATH
-    #     / "D_ICD_DIAGNOSES.csv.gz",
-    #     diagnoses_path=DATASET_PATH
-    #     / "DIAGNOSES_ICD.csv.gz",
-    #     phenotype_definitions_path=Path("/home/tanalp/thesis/dpnlp")
-    #     / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
-    #     hcup_ccs_2015_path=Path("/home/tanalp/thesis/dpnlp")
-    #     / "mimic3benchmark/resources/hcup_ccs_2015_definitions.yaml",
-    #     var_map_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/itemid_to_variable_map.csv",
-    #     var_ranges_path=Path("/home/tanalp/thesis/dpnlp") / "mimic3benchmark/resources/variable_ranges.csv",
-    #     variable_column="LEVEL2",
-    # )
-
     ################################################
     # Build Patient Database
     ################################################
@@ -1467,44 +1570,65 @@ def run_builder(cfg: DictConfig):
         )
     logger.info(f"Filtered patients (single stay, no transfers): {len(filtered_db)}")
 
-    ################################################
-    # Timeseries Data
-    ################################################
+    task = instantiate(cfg.task)
+    logger.info(f"Task info: {task.get_info}")
 
-    task = instantiate(cfg.task)   
-    Events.process_events_for_patients(
-        data_manager=data_manager,
-        filtered_db=filtered_db,
-        stats_csv=data_manager.stats_path,
-        parquet_dir=data_manager.save_path,
-        n_timesteps=24,
-        task=task,
-        max_workers=8,
-    )
-    breakpoint()
-    ##################################################
-    # NLP Data
-    ##################################################
+    if task.get_info["task_type"] == "summary":
+        ##################################################
+        # NLP Data
+        ##################################################
+        logger.info("Running NLP summarization data workflow...")
 
-    ####################################################
-    # Create HospitalUnit and Arrange Data Heterogeneity
-    ####################################################
+        source_texts = [task.get_source_text(p) for p in filtered_db.values()]
+        target_texts = [task.get_label(p) for p in filtered_db.values()]
 
-    # hospital = HospitalUnit.from_events_objs(
-    #     list(filtered_db.values()),
-    #     events_objs,
-    #     stats_csv="/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv",
-    #     n_timesteps=24,
-    #     task=task
-    # )
-    hospital = HospitalUnit(patients=list(filtered_db.values()), padded_seq=padded_seq)
-    dataset = hospital.build_dataset(task=task)
-    train, test, dev = hospital.split_dataset(dataset, split_ratio=0.8, seed=42)
-    client_datasets, dev_set, test_set = hospital.partition_dataset(
-        train, split_method=1, num_clients=2, alpha=0.5, is_shuffle=True
-    )
-    breakpoint()
-    hospital.show_distribution(client_datasets, num_clients=2, split_method="iid")
+        tokenizer = AutoTokenizer.from_pretrained(
+            "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext"
+        )
+        dataset = MIMIC3SummarizationDataset(
+            source_texts=source_texts, target_texts=target_texts, tokenizer=tokenizer
+        )
+        hospital = HospitalUnit(patients=list(filtered_db.values()))
+        train, test, dev = hospital.split_dataset(dataset, split_ratio=0.8, seed=42)
+        breakpoint()
+
+        #################################################
+        # Timeseries Data
+        #################################################
+    else:
+        logger.info("Running timeseries data workflow...")
+        padded_seq = []
+        Events.process_events_for_patients(
+            data_manager=data_manager,
+            filtered_db=filtered_db,
+            stats_csv=data_manager.stats_path,
+            parquet_dir=data_manager.save_path,
+            n_timesteps=24,
+            task=task,
+            max_workers=8,
+        )
+
+        ####################################################
+        # Create HospitalUnit and Arrange Data Heterogeneity
+        ####################################################
+
+        # hospital = HospitalUnit.from_events_objs(
+        #     list(filtered_db.values()),
+        #     events_objs,
+        #     stats_csv="/home/tanalp/thesis/dpnlp/thesis/dpnlp_lib/src/dataset/features_stats_3.csv",
+        #     n_timesteps=24,
+        #     task=task
+        # )
+        hospital = HospitalUnit(
+            patients=list(filtered_db.values()), padded_seq=padded_seq
+        )
+        dataset = hospital.build_dataset(task=task)
+        train, test, dev = hospital.split_dataset(dataset, split_ratio=0.8, seed=42)
+        client_datasets, dev_set, test_set = hospital.partition_dataset(
+            train, split_method=1, num_clients=2, alpha=0.5, is_shuffle=True
+        )
+        breakpoint()
+        hospital.show_distribution(client_datasets, num_clients=2, split_method="iid")
 
     ################################################
     # Test cases

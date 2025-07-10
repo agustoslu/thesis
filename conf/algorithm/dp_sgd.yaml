@@ -9,7 +9,7 @@ model_config:
   input_dim: 300
   hidden_dim: 128
   num_layers: 6
-  dropout: 0.3
+  dropout: 0.0 # Generally speaking, differentially private training is enough of a regularizer by itself. Adding any more regularization (such as dropouts or data augmentation) is unnecessary and typically hurts performance. https://opacus.ai/tutorials/building_image_classifier#Tips-and-Tricks
 
 # client side training hyperparameters
 fit_config:
