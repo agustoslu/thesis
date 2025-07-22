@@ -15,6 +15,11 @@ python main.py -m task=mortality,phenotyping data_split=iid,non-iid,dirichlet_mo
 ```
 This would launch 12 jobs using different degrees of data heterogeneity using specified algorithms.
 
+Instead of sequential runs you can also batch them together to make better use of GPU, which is the recommended approach for Mortality and Phenotyping Tasks with the current configuration since the architecture used and FL setting does not make heavy use of GPU.
+```bash
+python batch_runner.py
+```
+
 ## Folder Structure For Hydra-Config Files
 ```bash
 thesis/
