@@ -1,2 +1,4 @@
 task: ${task}
 num_hospitals: 5
+seed: 42
+

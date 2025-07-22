@@ -1,0 +1,15 @@
+_target_: dpnlp_lib.src.dp_ftrl.DPFTRLFedAvg
+
+# server side 
+fraction_fit: 0.5
+fraction_evaluate: 1.0
+min_fit_clients: 2
+min_evaluate_clients: 1
+min_available_clients: 2
+  
+# client side
+fit_config:
+  lr: 0.01
+  epochs: 1
+  noise_multiplier: 1.0
+  max_grad_norm: 1.0

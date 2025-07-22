@@ -1,1 +1,7 @@
-_target_: dpnlp_lib.src.tasks.SummaryTask
+task_type:
+  _target_: dpnlp_lib.src.tasks.SummaryTask
+
+tokenizer_config:
+  _target_: transformers.AutoTokenizer.from_pretrained
+  _args_:
+    - "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext"

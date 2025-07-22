@@ -4,12 +4,12 @@ defaults:
 _target_: hydra_plugins.hydra_submitit_launcher.submitit_launcher.SlurmLauncher
 submitit_folder: ${hydra.run.dir}/.submitit/%j
 
-timeout_min: 600         
+timeout_min: 240         
 tasks_per_node: 1
 nodes: 1
-mem_gb: 96
+mem_gb: 80
 gres: gpu:1              
-constraint: "hopper"    
+constraint: "ampere"    
 
 name: ${hydra.job.name}
 signal_delay_s: 600
@@ -19,7 +19,7 @@ additional_parameters:
   output: /dss/dsshome1/02/ra79vom2/slurm_logs/slurm-%j.out
   error: /dss/dsshome1/02/ra79vom2/slurm_logs/slurm-%j.err
 
-array_parallelism: 256  
+array_parallelism: 1
 
 setup:
   - enroot create --name my_container /dss/dsshome1/02/ra79vom2/agustoslu+pytorch_with_deps.sqsh || true

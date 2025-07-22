@@ -1,7 +1,8 @@
 defaults:
-  - scripts/builder
-  - scripts/server
- # - scripts/client
+  - _self_
+  - server: default
+  - builder: default
   - data_split: iid
   - algorithm: dp_sgd  
-  - task: summarization
+  - task: phenotyping
+  - client: default

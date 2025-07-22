@@ -1,1 +1,13 @@
-_target_: dpnlp_lib.src.tasks.PhenotypeTask
+ _target_: dpnlp_lib.src.tasks.PhenotypeTask
+
+ task_type: multiclass
+
+ model_config:
+  input_dim: 63
+  num_classes: 2
+  embed_dim: 128
+  num_heads: 4
+  num_layers: 2
+  dropout: 0.0
+
+

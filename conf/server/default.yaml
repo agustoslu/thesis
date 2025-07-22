@@ -1,6 +1,10 @@
+defaults:
+  - _self_
 task: ${task}
 num_supernodes: ${builder.num_hospitals}
+num_rounds: 20
 backend_config:
-  client_resources: 
+  client_resources:
+    num_cpus: 2
     num_gpus: 1
-num_rounds: 200
+

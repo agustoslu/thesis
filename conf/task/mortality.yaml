@@ -1,1 +1,13 @@
-_target_: dpnlp_lib.src.tasks.MortalityTask
+ _target_: dpnlp_lib.src.tasks.MortalityTask
+
+ task_type: binary
+
+ model_config:
+  input_dim: 63
+  num_classes: 2
+  embed_dim: 128
+  num_heads: 4
+  num_layers: 2
+  dropout: 0.0
+
+
